@@ -16,7 +16,7 @@ import {
   Typography,
 } from 'antd'
 import { MinusCircleOutlined, PlusOutlined } from '@ant-design/icons'
-import { createQuestion, listQuestions } from '../../api.js'
+import { createQuestion, currentUser, listQuestions, logout } from '../../api.js'
 import { DIFFICULTIES, QUESTION_TYPES, REVIEW_STATUS } from '../../constants.js'
 
 const optionLetter = (index) => String.fromCharCode(65 + index)
@@ -172,6 +172,7 @@ export default function QuestionBank() {
   const [drawer, setDrawer] = useState({ open: false, editing: null })
   const [submitting, setSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState(null)
+  const user = currentUser()
 
   const openCreate = () => {
     form.resetFields()
@@ -280,9 +281,15 @@ export default function QuestionBank() {
           <Typography.Title level={3} style={{ margin: 0 }}>
             题库
           </Typography.Title>
-          <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
-            新建题目
-          </Button>
+          <Flex gap={12} align="center">
+            <Typography.Text type="secondary">
+              {user ? `${user.name}（${user.username}）` : ''}
+            </Typography.Text>
+            <Button onClick={logout}>退出</Button>
+            <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
+              新建题目
+            </Button>
+          </Flex>
         </Flex>
         {body}
       </Card>

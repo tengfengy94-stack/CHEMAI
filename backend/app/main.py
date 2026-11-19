@@ -11,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app import config
+from app.auth import AccessDeniedError, AuthRequiredError
 from app.db import make_engine, make_session_factory
 from app.envelope import fail
 from app.routes import router
@@ -62,6 +63,14 @@ def create_app(database_url: str | None = None, seed: bool = True) -> FastAPI:
         else:
             message = "请求格式不对"
         return fail(message, 422)
+
+    @app.exception_handler(AuthRequiredError)
+    async def auth_required(_req: Request, exc: AuthRequiredError):
+        return fail(str(exc), 401)
+
+    @app.exception_handler(AccessDeniedError)
+    async def access_denied(_req: Request, exc: AccessDeniedError):
+        return fail(str(exc), 403)
 
     @app.exception_handler(Exception)
     async def unexpected_error(_req: Request, _exc: Exception):

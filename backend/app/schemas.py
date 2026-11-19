@@ -27,6 +27,11 @@ class QuestionValidationError(ValueError):
     """建题不合规，消息是给老师看的中文。"""
 
 
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
 class QuestionCreate(BaseModel):
     # 只收这几个字段；status、created_by 等即使传了也忽略，由后端决定
     model_config = ConfigDict(extra="ignore")
@@ -99,3 +104,11 @@ def question_to_dict(q: Question) -> dict:
         "created_by": q.created_by,
         "created_at": _iso_utc(q.created_at),
     }
+
+
+def question_to_public_dict(q: Question) -> dict:
+    """学生可见的题目条目：不发标准答案与解析（设计/02 §4.6——发卷时它不是给学生的）。"""
+    data = question_to_dict(q)
+    del data["answer"]
+    del data["explanation"]
+    return data

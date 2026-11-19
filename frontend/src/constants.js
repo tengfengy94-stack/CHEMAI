@@ -13,3 +13,12 @@ export const REVIEW_STATUS = {
 }
 
 export const DIFFICULTIES = [1, 2, 3]
+
+// 登录后的落地页：老师和管理员进题库，学生进考试页（第 03 章是占位页）
+export const HOME_BY_ROLE = {
+  teacher: '/teacher/questions',
+  admin: '/teacher/questions',
+  student: '/student/exams',
+}
+
+export const homeFor = (role) => HOME_BY_ROLE[role] ?? '/login'

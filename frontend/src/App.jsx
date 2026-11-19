@@ -1,12 +1,52 @@
-import { Navigate, Route, Routes } from 'react-router'
+import { Navigate, Route, Routes, useLocation } from 'react-router'
+import { loadAuth } from './api.js'
+import { homeFor } from './constants.js'
+import LoginPage from './pages/LoginPage.jsx'
 import QuestionBank from './pages/teacher/QuestionBank.jsx'
+import StudentExams from './pages/student/Exams.jsx'
+
+// 路由守卫只管体验，真正的权限在服务端按身份再过滤一次
+function RequireAuth({ roles, children }) {
+  const location = useLocation()
+  const auth = loadAuth()
+  if (!auth) {
+    return <Navigate to={`/login?from=${encodeURIComponent(location.pathname)}`} replace />
+  }
+  if (roles && !roles.includes(auth.user?.role)) {
+    // 学生误入老师页回自己的落地页，老师误入学生页同理
+    return <Navigate to={homeFor(auth.user?.role)} replace />
+  }
+  return children
+}
+
+function Entry() {
+  const auth = loadAuth()
+  if (!auth) return <Navigate to="/login" replace />
+  return <Navigate to={homeFor(auth.user?.role)} replace />
+}
 
 export default function App() {
   return (
     <Routes>
-      <Route path="/" element={<Navigate to="/teacher/questions" replace />} />
-      <Route path="/teacher/questions" element={<QuestionBank />} />
-      <Route path="*" element={<Navigate to="/teacher/questions" replace />} />
+      <Route path="/login" element={<LoginPage />} />
+      <Route path="/" element={<Entry />} />
+      <Route
+        path="/teacher/questions"
+        element={
+          <RequireAuth roles={['teacher', 'admin']}>
+            <QuestionBank />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/student/exams"
+        element={
+          <RequireAuth roles={['student']}>
+            <StudentExams />
+          </RequireAuth>
+        }
+      />
+      <Route path="*" element={<Entry />} />
     </Routes>
   )
 }

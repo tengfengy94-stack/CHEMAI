@@ -1,9 +1,18 @@
-"""对外接口：/api/health、GET /api/questions、POST /api/questions。"""
+"""对外接口：/api/health、GET /api/questions、POST /api/questions。
+
+第 03 章起题库接口要登录：这里的 client 夹具覆盖 conftest 的匿名版，
+先建演示老师并登录，再把凭证装进默认请求头，既有用例不用逐个改调用。
+"""
 import sqlite3
 
+import pytest
 from fastapi.testclient import TestClient
 
+from app.auth import hash_password
+from app.db import make_engine, make_session_factory
 from app.main import create_app
+from app.models import User
+from helpers import DEMO_PASSWORD, login
 
 SINGLE = {
     "stem": "下列物质中属于电解质的是",
@@ -15,8 +24,31 @@ SINGLE = {
 }
 
 
-def post(client, **changes):
-    return client.post("/api/questions", json={**SINGLE, **changes})
+@pytest.fixture
+def client(database_url):
+    """以 teacher01 身份调用题库接口的 client。"""
+    app = create_app(database_url=database_url, seed=False)
+    engine = make_engine(database_url)
+    factory = make_session_factory(engine)
+    with factory() as session:
+        session.add(
+            User(
+                username="teacher01",
+                name="演示老师",
+                role="teacher",
+                password_hash=hash_password(DEMO_PASSWORD),
+            )
+        )
+        session.commit()
+    engine.dispose()
+    with TestClient(app) as c:
+        token = login(c, "teacher01")
+        c.headers.update({"Authorization": f"Bearer {token}"})
+        yield c
+
+
+def post(client, headers=None, **changes):
+    return client.post("/api/questions", json={**SINGLE, **changes}, headers=headers)
 
 
 # ---- 信封与健康检查（验收 1）----
@@ -171,6 +203,11 @@ def start(database_url):
     return TestClient(create_app(database_url=database_url, seed=True))
 
 
+def seed_headers(c):
+    """种子启动后的 client 是匿名的，登录演示老师拿凭证。"""
+    return {"Authorization": f"Bearer {login(c, 'teacher01')}"}
+
+
 SEED_STEMS = [
     "下列物质中属于电解质的是",
     "配平：Fe + O2 → Fe3O4",
@@ -180,7 +217,7 @@ SEED_STEMS = [
 
 def test_first_start_on_empty_database_inserts_three_seed_questions(database_url):
     with start(database_url) as c:
-        data = c.get("/api/questions").json()["data"]
+        data = c.get("/api/questions", headers=seed_headers(c)).json()["data"]
     assert [q["stem"] for q in data] == SEED_STEMS
     single, blank, multiple = data
     assert (single["type"], single["options"], single["answer"], single["difficulty"], single["status"]) == (
@@ -195,15 +232,15 @@ def test_first_start_on_empty_database_inserts_three_seed_questions(database_url
 def test_restarting_twice_keeps_exactly_three_seed_questions(database_url):
     for _ in range(3):
         with start(database_url) as c:
-            count = len(c.get("/api/questions").json()["data"])
+            count = len(c.get("/api/questions", headers=seed_headers(c)).json()["data"])
     assert count == 3
 
 
 def test_created_question_survives_two_restarts(database_url):
     with start(database_url) as c:
-        post(c, stem="重启后还在吗")
+        post(c, headers=seed_headers(c), stem="重启后还在吗")
     for _ in range(2):
         with start(database_url) as c:
-            data = c.get("/api/questions").json()["data"]
+            data = c.get("/api/questions", headers=seed_headers(c)).json()["data"]
     assert len(data) == 4
     assert data[0]["stem"] == "重启后还在吗"

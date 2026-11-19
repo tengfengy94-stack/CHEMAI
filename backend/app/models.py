@@ -1,7 +1,7 @@
 """数据结构。改这里之后必须写一条 Alembic 迁移，不靠启动时自动建表。"""
 from datetime import datetime, timezone
 
-from sqlalchemy import JSON, DateTime, Integer, String, Text
+from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -11,6 +11,28 @@ class Base(DeclarativeBase):
 
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+class Class(Base):
+    __tablename__ = "classes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(64), nullable=False)
+    # 班主任：一个老师可带多个班；环形外键，迁移里最后一步补约束
+    teacher_id: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    username: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    name: Mapped[str] = mapped_column(String(64), nullable=False)
+    # teacher / student / admin
+    role: Mapped[str] = mapped_column(String(16), nullable=False)
+    # 学生归属的班；老师、管理员为 NULL
+    class_id: Mapped[int | None] = mapped_column(ForeignKey("classes.id"), nullable=True)
+    password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
 
 
 class Question(Base):
