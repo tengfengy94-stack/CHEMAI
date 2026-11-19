@@ -1,0 +1,11 @@
+# 后端依赖，装在项目根目录的 .venv：
+#   .venv/Scripts/python.exe -m pip install -r backend/requirements.txt
+fastapi==0.165.0
+uvicorn==0.54.0
+sqlalchemy==2.1.9
+alembic==1.20.1
+pydantic==2.14.4
+
+# 测试
+pytest==9.2.0
+httpx==0.28.1
