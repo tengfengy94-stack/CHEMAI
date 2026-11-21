@@ -14,7 +14,7 @@ from app import config
 from app.auth import AccessDeniedError, AuthRequiredError
 from app.db import make_engine, make_session_factory
 from app.envelope import fail
-from app.routes import router
+from app.routes import QuestionNotFound, router
 from app.schemas import FIELD_LABELS
 from app.seed import seed_if_empty
 
@@ -63,6 +63,10 @@ def create_app(database_url: str | None = None, seed: bool = True) -> FastAPI:
         else:
             message = "请求格式不对"
         return fail(message, 422)
+
+    @app.exception_handler(QuestionNotFound)
+    async def question_not_found(_req: Request, _exc: QuestionNotFound):
+        return fail("题目不存在", 404)
 
     @app.exception_handler(AuthRequiredError)
     async def auth_required(_req: Request, exc: AuthRequiredError):

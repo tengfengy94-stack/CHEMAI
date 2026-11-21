@@ -125,7 +125,25 @@ export const logout = () => {
   redirectToLogin()
 }
 
-export const listQuestions = () => request('/questions')
+export const listQuestions = ({ difficulty, status, q, page } = {}) => {
+  const params = new URLSearchParams()
+  if (difficulty) params.set('difficulty', difficulty)
+  if (status) params.set('status', status)
+  if (q) params.set('q', q)
+  if (page) params.set('page', page)
+  const query = params.toString()
+  return request(`/questions${query ? `?${query}` : ''}`)
+}
 
 export const createQuestion = (question) =>
   request('/questions', { method: 'POST', body: JSON.stringify(question) })
+
+export const updateQuestion = (id, question) =>
+  request(`/questions/${id}`, { method: 'PUT', body: JSON.stringify(question) })
+
+export const changeQuestionStatus = (id, status) =>
+  request(`/questions/${id}/status`, { method: 'POST', body: JSON.stringify({ status }) })
+
+export const getQuestionUsage = (id) => request(`/questions/${id}/usage`)
+
+export const deleteQuestion = (id) => request(`/questions/${id}`, { method: 'DELETE' })

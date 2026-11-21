@@ -78,7 +78,11 @@ def test_wrong_method_gets_chinese_error_in_envelope(client):
 
 def test_list_is_empty_on_fresh_database(client):
     r = client.get("/api/questions")
-    assert r.json() == {"success": True, "data": [], "error": None}
+    assert r.json() == {
+        "success": True,
+        "data": {"items": [], "total": 0, "page": 1, "page_size": 20},
+        "error": None,
+    }
 
 
 def test_created_question_has_all_attributes_and_defaults(client):
@@ -106,7 +110,7 @@ def test_client_cannot_choose_status_on_create(client):
 def test_created_question_appears_in_list_newest_first(client):
     post(client, stem="第一道")
     post(client, stem="第二道")
-    stems = [q["stem"] for q in client.get("/api/questions").json()["data"]]
+    stems = [q["stem"] for q in client.get("/api/questions").json()["data"]["items"]]
     assert stems == ["第二道", "第一道"]
 
 
@@ -166,7 +170,7 @@ def test_rejects_answer_not_in_options(client):
 
 def test_rejected_question_is_not_saved(client):
     post(client, stem="")
-    assert client.get("/api/questions").json()["data"] == []
+    assert client.get("/api/questions").json()["data"]["items"] == []
 
 
 def test_malformed_json_body_gets_chinese_error_in_envelope(client):
@@ -194,7 +198,7 @@ def test_list_reflects_direct_database_edit(client, database_url):
     with conn:
         conn.execute("UPDATE questions SET stem = ? WHERE id = ?", ("改过的题干", qid))
     conn.close()
-    assert client.get("/api/questions").json()["data"][0]["stem"] == "改过的题干"
+    assert client.get("/api/questions").json()["data"]["items"][0]["stem"] == "改过的题干"
 
 
 # ---- 验收 3、4：种子题、新建题经得起重启 ----
@@ -217,7 +221,7 @@ SEED_STEMS = [
 
 def test_first_start_on_empty_database_inserts_three_seed_questions(database_url):
     with start(database_url) as c:
-        data = c.get("/api/questions", headers=seed_headers(c)).json()["data"]
+        data = c.get("/api/questions", headers=seed_headers(c)).json()["data"]["items"]
     assert [q["stem"] for q in data] == SEED_STEMS
     single, blank, multiple = data
     assert (single["type"], single["options"], single["answer"], single["difficulty"], single["status"]) == (
@@ -232,7 +236,7 @@ def test_first_start_on_empty_database_inserts_three_seed_questions(database_url
 def test_restarting_twice_keeps_exactly_three_seed_questions(database_url):
     for _ in range(3):
         with start(database_url) as c:
-            count = len(c.get("/api/questions", headers=seed_headers(c)).json()["data"])
+            count = len(c.get("/api/questions", headers=seed_headers(c)).json()["data"]["items"])
     assert count == 3
 
 
@@ -241,6 +245,6 @@ def test_created_question_survives_two_restarts(database_url):
         post(c, headers=seed_headers(c), stem="重启后还在吗")
     for _ in range(2):
         with start(database_url) as c:
-            data = c.get("/api/questions", headers=seed_headers(c)).json()["data"]
+            data = c.get("/api/questions", headers=seed_headers(c)).json()["data"]["items"]
     assert len(data) == 4
     assert data[0]["stem"] == "重启后还在吗"

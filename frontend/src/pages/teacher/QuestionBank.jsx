@@ -9,21 +9,37 @@ import {
   Flex,
   Form,
   Input,
+  Modal,
   Radio,
   Result,
+  Select,
   Table,
   Tag,
   Typography,
 } from 'antd'
 import { MinusCircleOutlined, PlusOutlined } from '@ant-design/icons'
-import { createQuestion, currentUser, listQuestions, logout } from '../../api.js'
+import {
+  changeQuestionStatus,
+  createQuestion,
+  currentUser,
+  deleteQuestion,
+  getQuestionUsage,
+  listQuestions,
+  logout,
+  updateQuestion,
+} from '../../api.js'
 import { DIFFICULTIES, QUESTION_TYPES, REVIEW_STATUS } from '../../constants.js'
 
 const optionLetter = (index) => String.fromCharCode(65 + index)
 
 const NEW_QUESTION_DEFAULTS = { type: 'single', difficulty: 2, options: ['', '', '', ''] }
 
-const columns = (onEdit) => [
+const statusTag = (status) => {
+  const s = REVIEW_STATUS[status]
+  return s ? <Tag color={s.color}>{s.label}</Tag> : status
+}
+
+const columns = ({ onEdit, onReview, onDelete }) => [
   { title: '题干', dataIndex: 'stem', ellipsis: true },
   {
     title: '题型',
@@ -36,19 +52,33 @@ const columns = (onEdit) => [
     title: '审核状态',
     dataIndex: 'status',
     width: 110,
-    render: (status) => {
-      const s = REVIEW_STATUS[status]
-      return s ? <Tag color={s.color}>{s.label}</Tag> : status
-    },
+    render: statusTag,
   },
   {
     title: '操作',
     key: 'action',
-    width: 90,
+    width: 260,
     render: (_, record) => (
-      <Button type="link" size="small" onClick={() => onEdit(record)}>
-        编辑
-      </Button>
+      <Flex gap={4} wrap>
+        {record.status !== 'approved' && (
+          <Button type="link" size="small" onClick={() => onEdit(record)}>
+            编辑
+          </Button>
+        )}
+        {record.status === 'draft' && (
+          <Button type="link" size="small" onClick={() => onReview(record, 'pending')}>
+            标待复核
+          </Button>
+        )}
+        {record.status !== 'approved' && (
+          <Button type="link" size="small" onClick={() => onReview(record, 'approved')}>
+            通过
+          </Button>
+        )}
+        <Button type="link" size="small" danger onClick={() => onDelete(record)}>
+          删除
+        </Button>
+      </Flex>
     ),
   },
 ]
@@ -141,26 +171,39 @@ function QuestionForm({ form, disabled }) {
   )
 }
 
-function useQuestions() {
-  const [state, setState] = useState({ loading: true, error: null, data: [] })
+function useQuestions(filters, page) {
+  const [state, setState] = useState({
+    loading: true,
+    error: null,
+    items: [],
+    total: 0,
+    pageSize: 20,
+  })
   const [version, setVersion] = useState(0)
 
   // 重新加载：先标记 loading，再触发下面的 effect 重取
-  const reload = useCallback(() => {
-    setState((s) => ({ ...s, loading: true, error: null }))
-    setVersion((v) => v + 1)
-  }, [])
+  const reload = useCallback(() => setVersion((v) => v + 1), [])
 
   useEffect(() => {
     let cancelled = false
-    listQuestions().then(
-      (data) => !cancelled && setState({ loading: false, error: null, data }),
+    setState((s) => ({ ...s, loading: true, error: null }))
+    listQuestions({ ...filters, page }).then(
+      (data) =>
+        !cancelled &&
+        setState({
+          loading: false,
+          error: null,
+          items: data.items,
+          total: data.total,
+          // 每页条数以服务端为准，前端不再另写一份
+          pageSize: data.page_size,
+        }),
       () => !cancelled && setState((s) => ({ ...s, loading: false, error: true })),
     )
     return () => {
       cancelled = true
     }
-  }, [version])
+  }, [version, page, filters.difficulty, filters.status, filters.q])
 
   return { ...state, reload }
 }
@@ -168,11 +211,33 @@ function useQuestions() {
 export default function QuestionBank() {
   const { message } = AntApp.useApp()
   const [form] = Form.useForm()
-  const questions = useQuestions()
+  const [filters, setFilters] = useState({ difficulty: undefined, status: undefined, q: '' })
+  const [keyword, setKeyword] = useState('')
+  const [page, setPage] = useState(1)
+  const questions = useQuestions(filters, page)
   const [drawer, setDrawer] = useState({ open: false, editing: null })
   const [submitting, setSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState(null)
   const user = currentUser()
+
+  // 当前页被删空（total 还在）时回退一页，避免停在越界页显示"题库里还没有题"
+  useEffect(() => {
+    if (!questions.loading && questions.items.length === 0 && questions.total > 0 && page > 1) {
+      setPage(page - 1)
+    }
+  }, [questions.loading, questions.items.length, questions.total, page])
+
+  const hasFilters = Boolean(filters.difficulty || filters.status || filters.q)
+
+  const applyFilters = (patch) => {
+    setFilters((f) => ({ ...f, ...patch }))
+    setPage(1)
+  }
+
+  const clearFilters = () => {
+    setKeyword('')
+    applyFilters({ difficulty: undefined, status: undefined, q: '' })
+  }
 
   const openCreate = () => {
     form.resetFields()
@@ -203,14 +268,17 @@ export default function QuestionBank() {
     } catch {
       return
     }
+    const payload = { ...values, options: values.type === 'blank' ? null : values.options }
     setSubmitting(true)
     setSubmitError(null)
     try {
-      await createQuestion({
-        ...values,
-        options: values.type === 'blank' ? null : values.options,
-      })
-      message.success('已保存为草稿，在列表第一行；确认无误后再标待复核或通过')
+      if (drawer.editing) {
+        await updateQuestion(drawer.editing.id, payload)
+        message.success('已保存')
+      } else {
+        await createQuestion(payload)
+        message.success('已保存为草稿，在列表第一行；确认无误后再标待复核或通过')
+      }
       close()
       questions.reload()
     } catch (e) {
@@ -221,11 +289,57 @@ export default function QuestionBank() {
     }
   }
 
+  const handleReview = async (record, status) => {
+    try {
+      await changeQuestionStatus(record.id, status)
+      message.success(status === 'approved' ? '已通过，学生可见' : '已标为待复核')
+      questions.reload()
+    } catch (e) {
+      message.error(e.message)
+    }
+  }
+
+  const handleDelete = async (record) => {
+    let papers
+    try {
+      papers = (await getQuestionUsage(record.id)).papers
+    } catch (e) {
+      message.error(e.message)
+      return
+    }
+    // 被卷子用过就直接说，不弹确认——确认了也删不掉（设计/05 §4.2）
+    if (papers > 0) {
+      message.warning(`这道题已被 ${papers} 份卷子使用，不能删除`)
+      return
+    }
+    Modal.confirm({
+      title: '删除这道题？',
+      content: '删除后不能恢复。',
+      okText: '删除',
+      okButtonProps: { danger: true },
+      cancelText: '取消',
+      onOk: async () => {
+        try {
+          await deleteQuestion(record.id)
+          message.success('已删除')
+          // 删掉当前页最后一条时直接回退，不等下一轮请求发现越界
+          if (questions.items.length === 1 && page > 1) {
+            setPage(page - 1)
+          } else {
+            questions.reload()
+          }
+        } catch (e) {
+          message.error(e.message)
+        }
+      },
+    })
+  }
+
   const editing = drawer.editing !== null
 
   // 出错只给固定文案加重试，不显示原始报错（设计/05 §4.3）
   let body
-  if (questions.error && questions.data.length === 0) {
+  if (questions.error && questions.items.length === 0) {
     body = (
       <Result
         status="warning"
@@ -239,6 +353,22 @@ export default function QuestionBank() {
       />
     )
   } else {
+    let emptyText
+    if (hasFilters) {
+      emptyText = (
+        <Empty description="没有符合条件的题">
+          <Button onClick={clearFilters}>清除筛选</Button>
+        </Empty>
+      )
+    } else {
+      emptyText = (
+        <Empty description="题库里还没有题">
+          <Button type="primary" onClick={openCreate}>
+            新建第一道题
+          </Button>
+        </Empty>
+      )
+    }
     body = (
       <>
         {questions.error && (
@@ -256,19 +386,17 @@ export default function QuestionBank() {
         )}
         <Table
           rowKey="id"
-          columns={columns(openEdit)}
-          dataSource={questions.data}
+          columns={columns({ onEdit: openEdit, onReview: handleReview, onDelete: handleDelete })}
+          dataSource={questions.items}
           loading={questions.loading}
-          pagination={false}
-          locale={{
-            emptyText: questions.loading ? ' ' : (
-              <Empty description="题库里还没有题">
-                <Button type="primary" onClick={openCreate}>
-                  新建第一道题
-                </Button>
-              </Empty>
-            ),
+          pagination={{
+            current: page,
+            pageSize: questions.pageSize,
+            total: questions.total,
+            showSizeChanger: false,
+            onChange: setPage,
           }}
+          locale={{ emptyText: questions.loading ? ' ' : emptyText }}
         />
       </>
     )
@@ -291,11 +419,42 @@ export default function QuestionBank() {
             </Button>
           </Flex>
         </Flex>
+
+        <Flex gap={12} wrap style={{ marginBottom: 16 }}>
+          <Select
+            allowClear
+            placeholder="难度"
+            style={{ width: 120 }}
+            value={filters.difficulty}
+            onChange={(value) => applyFilters({ difficulty: value })}
+            options={DIFFICULTIES.map((d) => ({ value: d, label: `难度 ${d}` }))}
+          />
+          <Select
+            allowClear
+            placeholder="审核状态"
+            style={{ width: 140 }}
+            value={filters.status}
+            onChange={(value) => applyFilters({ status: value })}
+            options={Object.entries(REVIEW_STATUS).map(([value, s]) => ({
+              value,
+              label: s.label,
+            }))}
+          />
+          <Input.Search
+            allowClear
+            placeholder="按题干关键词搜索"
+            style={{ width: 260 }}
+            value={keyword}
+            onChange={(e) => setKeyword(e.target.value)}
+            onSearch={(value) => applyFilters({ q: value.trim() })}
+          />
+        </Flex>
+
         {body}
       </Card>
 
       <Drawer
-        title={editing ? '编辑题目（第 04 章开放保存）' : '新建题目'}
+        title={editing ? '编辑题目' : '新建题目'}
         open={drawer.open}
         onClose={close}
         size={520}
@@ -303,12 +462,7 @@ export default function QuestionBank() {
         extra={
           <Flex gap={8}>
             <Button onClick={close}>取消</Button>
-            <Button
-              type="primary"
-              onClick={handleSubmit}
-              loading={submitting}
-              disabled={editing}
-            >
+            <Button type="primary" onClick={handleSubmit} loading={submitting}>
               提交
             </Button>
           </Flex>

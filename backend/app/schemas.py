@@ -4,6 +4,7 @@
 业务规则（题型、难度范围、选项、答案）在 validate_new_question 里统一检查。
 """
 from datetime import datetime, timezone
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, StrictInt
 
@@ -20,6 +21,9 @@ FIELD_LABELS = {
     "answer": "标准答案",
     "explanation": "解析",
     "difficulty": "难度",
+    "status": "审核状态",
+    "username": "用户名",
+    "password": "密码",
 }
 
 
@@ -30,6 +34,12 @@ class QuestionValidationError(ValueError):
 class LoginRequest(BaseModel):
     username: str
     password: str
+
+
+class QuestionStatusUpdate(BaseModel):
+    """审核动作只有两种：标待复核、通过。退回草稿不是一种动作，不在这里。"""
+
+    status: Literal["pending", "approved"]
 
 
 class QuestionCreate(BaseModel):

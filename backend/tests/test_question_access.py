@@ -49,8 +49,8 @@ def test_teacher_sees_only_own_questions(client, make_user):
     assert r.status_code == 201
     client.post("/api/questions", headers=auth(token_b), json={**QUESTION, "stem": "b 的题"})
 
-    stems_a = [q["stem"] for q in client.get("/api/questions", headers=auth(token_a)).json()["data"]]
-    stems_b = [q["stem"] for q in client.get("/api/questions", headers=auth(token_b)).json()["data"]]
+    stems_a = [q["stem"] for q in client.get("/api/questions", headers=auth(token_a)).json()["data"]["items"]]
+    stems_b = [q["stem"] for q in client.get("/api/questions", headers=auth(token_b)).json()["data"]["items"]]
     assert stems_a == [QUESTION["stem"]]
     assert stems_b == ["b 的题"]
 
@@ -63,7 +63,7 @@ def test_student_sees_only_approved_questions(client, make_user, insert_question
     insert_question("t", "approved", "已通过题")
 
     token_s = login(client, "s")
-    data = client.get("/api/questions", headers=auth(token_s)).json()["data"]
+    data = client.get("/api/questions", headers=auth(token_s)).json()["data"]["items"]
     assert [q["stem"] for q in data] == ["已通过题"]
 
 
@@ -73,7 +73,7 @@ def test_student_entries_have_no_answer_or_explanation(client, make_user, insert
     insert_question("t", "approved")
 
     token_s = login(client, "s")
-    q = client.get("/api/questions", headers=auth(token_s)).json()["data"][0]
+    q = client.get("/api/questions", headers=auth(token_s)).json()["data"]["items"][0]
     assert "answer" not in q
     assert "explanation" not in q
 
@@ -82,7 +82,7 @@ def test_teacher_entries_keep_answer_and_explanation(client, make_user, insert_q
     make_user("t", role="teacher")
     insert_question("t", "approved")
     token_t = login(client, "t")
-    q = client.get("/api/questions", headers=auth(token_t)).json()["data"][0]
+    q = client.get("/api/questions", headers=auth(token_t)).json()["data"]["items"][0]
     assert q["answer"] == "NaCl"
     assert q["explanation"] == "解析内容"
 
@@ -95,7 +95,7 @@ def test_admin_sees_all_questions(client, make_user, insert_question):
     make_user("admin", role="admin")
 
     token_admin = login(client, "admin")
-    data = client.get("/api/questions", headers=auth(token_admin)).json()["data"]
+    data = client.get("/api/questions", headers=auth(token_admin)).json()["data"]["items"]
     assert [q["status"] for q in data] == ["approved", "pending", "draft"]
 
 

@@ -121,7 +121,8 @@ def test_valid_token_returns_data(client, make_user):
     token = login(client, "teacher01")
     r = client.get("/api/questions", headers=auth(token))
     assert r.status_code == 200
-    assert r.json()["data"] == []
+    data = r.json()["data"]
+    assert data["items"] == [] and data["total"] == 0
 
 
 # ---- 种子账号（tasks 4.1）：空库启动即有演示账号 ----
@@ -148,7 +149,7 @@ def test_seed_accounts_missing_password_or_unknown_user_rejected(database_url):
 def test_teacher01_sees_three_seed_questions_after_login(database_url):
     with start(database_url) as c:
         token = login(c, "teacher01")
-        data = c.get("/api/questions", headers=auth(token)).json()["data"]
+        data = c.get("/api/questions", headers=auth(token)).json()["data"]["items"]
     assert len(data) == 3
     assert all(q["created_by"] == "teacher01" for q in data)
 
@@ -156,7 +157,7 @@ def test_teacher01_sees_three_seed_questions_after_login(database_url):
 def test_s0101_sees_only_approved_seed_question_without_answers(database_url):
     with start(database_url) as c:
         token = login(c, "s0101")
-        data = c.get("/api/questions", headers=auth(token)).json()["data"]
+        data = c.get("/api/questions", headers=auth(token)).json()["data"]["items"]
     assert len(data) == 1
     assert data[0]["status"] == "approved"
     assert "answer" not in data[0]
