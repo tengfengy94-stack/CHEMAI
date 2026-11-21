@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import { useNavigate } from 'react-router'
 import {
   Alert,
   App as AntApp,
@@ -210,6 +211,7 @@ function useQuestions(filters, page) {
 
 export default function QuestionBank() {
   const { message } = AntApp.useApp()
+  const navigate = useNavigate()
   const [form] = Form.useForm()
   const [filters, setFilters] = useState({ difficulty: undefined, status: undefined, q: '' })
   const [keyword, setKeyword] = useState('')
@@ -413,6 +415,7 @@ export default function QuestionBank() {
             <Typography.Text type="secondary">
               {user ? `${user.name}（${user.username}）` : ''}
             </Typography.Text>
+            <Button onClick={() => navigate('/teacher/exams')}>组卷</Button>
             <Button onClick={logout}>退出</Button>
             <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
               新建题目

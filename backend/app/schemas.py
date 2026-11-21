@@ -6,10 +6,10 @@
 from datetime import datetime, timezone
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, StrictInt
+from pydantic import BaseModel, ConfigDict, Field, StrictInt
 
 from app.answers import QUESTION_TYPES, AnswerError, normalize_answer
-from app.models import Question
+from app.models import AnswerRecord, Paper, PaperQuestion, Question
 
 DIFFICULTIES = (1, 2, 3)
 
@@ -24,6 +24,10 @@ FIELD_LABELS = {
     "status": "审核状态",
     "username": "用户名",
     "password": "密码",
+    "title": "卷子名称",
+    "question_id": "题目",
+    "class_id": "班级",
+    "answers": "答案",
 }
 
 
@@ -52,6 +56,38 @@ class QuestionCreate(BaseModel):
     answer: str
     explanation: str | None = None
     difficulty: StrictInt
+
+
+class PaperCreate(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    title: str
+
+
+class PaperQuestionAdd(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    question_id: StrictInt
+
+
+class PaperPublish(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    class_id: StrictInt
+
+
+class AnswerInput(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    question_id: StrictInt
+    # 长度在路由里检查，避免和建题的标准答案共用同一条字段提示
+    answer: str = ""
+
+
+class AttemptSubmit(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    answers: list[AnswerInput] = Field(default_factory=list)
 
 
 def validate_new_question(body: QuestionCreate) -> dict:
@@ -122,3 +158,50 @@ def question_to_public_dict(q: Question) -> dict:
     del data["answer"]
     del data["explanation"]
     return data
+
+
+def _iso_utc_or_none(dt: datetime | None) -> str | None:
+    return _iso_utc(dt) if dt else None
+
+
+def paper_to_dict(paper: Paper, question_count: int = 0) -> dict:
+    return {
+        "id": paper.id,
+        "title": paper.title,
+        "status": paper.status,
+        "created_by": paper.created_by,
+        "created_at": _iso_utc(paper.created_at),
+        "question_count": question_count,
+    }
+
+
+def paper_question_to_dict(pq: PaperQuestion, q: Question) -> dict:
+    """老师组卷时看到的题目：带标准答案与解析，另加卷内顺序。"""
+    data = question_to_dict(q)
+    data["position"] = pq.position
+    return data
+
+
+def question_pool_to_dict(q: Question) -> dict:
+    """组卷题目池只给挑题需要的字段。"""
+    return {
+        "id": q.id,
+        "stem": q.stem,
+        "type": q.type,
+        "difficulty": q.difficulty,
+    }
+
+
+def attempt_to_dict(record: AnswerRecord, paper_title: str, grading_in_progress: bool) -> dict:
+    return {
+        "id": record.id,
+        "paper_id": record.paper_id,
+        "paper_title": paper_title,
+        "status": record.status,
+        "score": record.score,
+        "grading_in_progress": grading_in_progress,
+        "created_at": _iso_utc(record.created_at),
+        "started_at": _iso_utc_or_none(record.started_at),
+        "submitted_at": _iso_utc_or_none(record.submitted_at),
+        "graded_at": _iso_utc_or_none(record.graded_at),
+    }

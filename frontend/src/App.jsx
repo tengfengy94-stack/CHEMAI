@@ -3,6 +3,7 @@ import { loadAuth } from './api.js'
 import { homeFor } from './constants.js'
 import LoginPage from './pages/LoginPage.jsx'
 import QuestionBank from './pages/teacher/QuestionBank.jsx'
+import TeacherExams from './pages/teacher/Exams.jsx'
 import StudentExams from './pages/student/Exams.jsx'
 
 // 路由守卫只管体验，真正的权限在服务端按身份再过滤一次
@@ -35,6 +36,14 @@ export default function App() {
         element={
           <RequireAuth roles={['teacher', 'admin']}>
             <QuestionBank />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/teacher/exams"
+        element={
+          <RequireAuth roles={['teacher', 'admin']}>
+            <TeacherExams />
           </RequireAuth>
         }
       />

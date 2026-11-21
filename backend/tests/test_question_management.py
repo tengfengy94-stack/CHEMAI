@@ -2,7 +2,7 @@
 import pytest
 
 from app.db import make_engine, make_session_factory
-from app.models import Question, utcnow
+from app.models import Paper, PaperQuestion, Question, utcnow
 from helpers import auth, login
 
 QUESTION = {
@@ -259,6 +259,70 @@ def test_usage_reports_zero_papers(client, make_user):
     r = client.get(f"/api/questions/{q['id']}/usage", headers=auth(token))
     assert r.status_code == 200
     assert r.json()["data"] == {"papers": 0}
+
+
+def put_question_in_paper(database_url, created_by, question_id, status="draft"):
+    """直接建一份卷子并引用题目，避开组卷接口，只验证使用计数。"""
+    engine = make_engine(database_url)
+    factory = make_session_factory(engine)
+    with factory() as session:
+        paper = Paper(
+            title="用题卷子", status=status, created_by=created_by, created_at=utcnow()
+        )
+        session.add(paper)
+        session.flush()
+        session.add(PaperQuestion(paper_id=paper.id, question_id=question_id, position=1))
+        session.commit()
+        paper_id = paper.id
+    engine.dispose()
+    return paper_id
+
+
+def remove_question_from_paper(database_url, question_id):
+    engine = make_engine(database_url)
+    factory = make_session_factory(engine)
+    with factory() as session:
+        session.query(PaperQuestion).filter(PaperQuestion.question_id == question_id).delete()
+        session.commit()
+    engine.dispose()
+
+
+def test_used_question_reports_count_and_cannot_delete(client, make_user, database_url):
+    make_user("t1", role="teacher")
+    token = login(client, "t1")
+    q = create(client, token)
+    put_question_in_paper(database_url, "t1", q["id"])
+
+    usage = client.get(f"/api/questions/{q['id']}/usage", headers=auth(token)).json()["data"]
+    assert usage == {"papers": 1}
+
+    r = client.delete(f"/api/questions/{q['id']}", headers=auth(token))
+    assert r.status_code == 409
+    assert "1 份卷子" in r.json()["error"]
+
+
+def test_question_removed_from_draft_paper_can_be_deleted(client, make_user, database_url):
+    make_user("t1", role="teacher")
+    token = login(client, "t1")
+    q = create(client, token)
+    put_question_in_paper(database_url, "t1", q["id"])
+    remove_question_from_paper(database_url, q["id"])
+
+    usage = client.get(f"/api/questions/{q['id']}/usage", headers=auth(token)).json()["data"]
+    assert usage == {"papers": 0}
+    r = client.delete(f"/api/questions/{q['id']}", headers=auth(token))
+    assert r.status_code == 200
+
+
+def test_question_in_published_paper_cannot_be_deleted(client, make_user, database_url):
+    make_user("t1", role="teacher")
+    token = login(client, "t1")
+    q = create(client, token)
+    put_question_in_paper(database_url, "t1", q["id"], status="published")
+
+    r = client.delete(f"/api/questions/{q['id']}", headers=auth(token))
+    assert r.status_code == 409
+    assert "1 份卷子" in r.json()["error"]
 
 
 def test_non_creator_cannot_delete(client, make_user):

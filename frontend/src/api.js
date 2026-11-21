@@ -147,3 +147,54 @@ export const changeQuestionStatus = (id, status) =>
 export const getQuestionUsage = (id) => request(`/questions/${id}/usage`)
 
 export const deleteQuestion = (id) => request(`/questions/${id}`, { method: 'DELETE' })
+
+// ---- 考试：老师组卷与发布 ----
+
+export const listPapers = () => request('/papers')
+
+export const createPaper = (title) =>
+  request('/papers', { method: 'POST', body: JSON.stringify({ title }) })
+
+export const getPaper = (id) => request(`/papers/${id}`)
+
+export const listQuestionPool = ({ difficulty, q } = {}) => {
+  const params = new URLSearchParams()
+  if (difficulty) params.set('difficulty', difficulty)
+  if (q) params.set('q', q)
+  const query = params.toString()
+  return request(`/papers/pool${query ? `?${query}` : ''}`)
+}
+
+export const listClasses = () => request('/classes')
+
+export const addPaperQuestion = (paperId, questionId) =>
+  request(`/papers/${paperId}/questions`, {
+    method: 'POST',
+    body: JSON.stringify({ question_id: questionId }),
+  })
+
+export const removePaperQuestion = (paperId, questionId) =>
+  request(`/papers/${paperId}/questions/${questionId}`, { method: 'DELETE' })
+
+export const publishPaper = (paperId, classId) =>
+  request(`/papers/${paperId}/publish`, {
+    method: 'POST',
+    body: JSON.stringify({ class_id: classId }),
+  })
+
+// ---- 考试：学生作答 ----
+
+export const listAttempts = () => request('/attempts')
+
+export const getAttempt = (id) => request(`/attempts/${id}`)
+
+export const startAttempt = (id) => request(`/attempts/${id}/start`, { method: 'POST' })
+
+export const submitAttempt = (id, answers) =>
+  request(`/attempts/${id}/submit`, {
+    method: 'POST',
+    body: JSON.stringify({ answers }),
+  })
+
+export const retryGrading = (id) =>
+  request(`/attempts/${id}/retry-grading`, { method: 'POST' })

@@ -14,7 +14,13 @@ from app import config
 from app.auth import AccessDeniedError, AuthRequiredError
 from app.db import make_engine, make_session_factory
 from app.envelope import fail
-from app.routes import QuestionNotFound, router
+from app.routes import (
+    AttemptNotFound,
+    ClassNotFound,
+    PaperNotFound,
+    QuestionNotFound,
+    router,
+)
 from app.schemas import FIELD_LABELS
 from app.seed import seed_if_empty
 
@@ -56,7 +62,12 @@ def create_app(database_url: str | None = None, seed: bool = True) -> FastAPI:
     async def validation_error(_req: Request, exc: RequestValidationError):
         first = exc.errors()[0]
         loc = [p for p in first.get("loc", ()) if p != "body"]
-        field = loc[0] if loc else None
+        # 嵌套字段（如 answers[0].question_id）取最深的已知字段名，提示才具体
+        fields = [p for p in loc if isinstance(p, str)]
+        field = next(
+            (name for name in reversed(fields) if name in FIELD_LABELS),
+            fields[-1] if fields else None,
+        )
         if field in FIELD_LABELS:
             label = FIELD_LABELS[field]
             message = f"缺少{label}" if first.get("type") == "missing" else f"{label}格式不对"
@@ -67,6 +78,18 @@ def create_app(database_url: str | None = None, seed: bool = True) -> FastAPI:
     @app.exception_handler(QuestionNotFound)
     async def question_not_found(_req: Request, _exc: QuestionNotFound):
         return fail("题目不存在", 404)
+
+    @app.exception_handler(PaperNotFound)
+    async def paper_not_found(_req: Request, _exc: PaperNotFound):
+        return fail("卷子不存在", 404)
+
+    @app.exception_handler(AttemptNotFound)
+    async def attempt_not_found(_req: Request, _exc: AttemptNotFound):
+        return fail("作答记录不存在", 404)
+
+    @app.exception_handler(ClassNotFound)
+    async def class_not_found(_req: Request, _exc: ClassNotFound):
+        return fail("班级不存在", 404)
 
     @app.exception_handler(AuthRequiredError)
     async def auth_required(_req: Request, exc: AuthRequiredError):
