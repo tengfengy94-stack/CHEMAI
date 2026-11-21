@@ -8,7 +8,6 @@
 判分、练习、复习都读这里整理后的结果，不另写一套。
 """
 import re
-import unicodedata
 from decimal import ROUND_HALF_UP, Decimal
 
 QUESTION_TYPES = ("single", "multiple", "blank")
@@ -54,9 +53,27 @@ def _choice_set(raw: str) -> set[str]:
     return set(letters)
 
 
+def _to_halfwidth(raw: str) -> str:
+    """只把全角 ASCII 转成半角。
+
+    不用 NFKC：它会把下标、上标和电荷一起归一，导致 H₂O 与 H2O
+    判成同一个答案，违反设计 02 §7“下标和电荷不归一”。
+    """
+    chars = []
+    for char in raw:
+        code = ord(char)
+        if 0xFF01 <= code <= 0xFF5E:
+            chars.append(chr(code - 0xFEE0))
+        elif code == 0x3000:
+            chars.append(" ")
+        else:
+            chars.append(char)
+    return "".join(chars)
+
+
 def _blank_key(raw: str) -> str:
-    """填空比较键：全角转半角，去掉所有空白，保留大小写。"""
-    return _WHITESPACE.sub("", unicodedata.normalize("NFKC", raw or ""))
+    """填空比较键：全角转半角，去掉所有空白，保留大小写与下标/电荷。"""
+    return _WHITESPACE.sub("", _to_halfwidth(raw or ""))
 
 
 def judge_answer(qtype: str, standard: str, submitted: str, option_count: int) -> bool:

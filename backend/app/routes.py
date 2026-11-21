@@ -49,6 +49,7 @@ from app.schemas import (
     question_to_dict,
     question_to_public_dict,
     validate_new_question,
+    wrong_question_to_dict,
 )
 
 router = APIRouter(prefix="/api")
@@ -800,6 +801,65 @@ def list_attempts(
             ]
         }
     )
+
+
+def _wrong_questions_query(user: User):
+    """错题清单：先按学生 + 题目编号，外层只留每题最近一次答错。
+
+    去重放在 SQL 里，管理员看全部时不会把不同学生的同一道题合并。
+    """
+    ranked = (
+        select(
+            AnswerItem.question_id.label("question_id"),
+            AnswerItem.student_answer.label("student_answer"),
+            AnswerItem.id.label("item_id"),
+            AnswerRecord.id.label("attempt_id"),
+            AnswerRecord.student_id.label("student_id"),
+            AnswerRecord.submitted_at.label("submitted_at"),
+            User.name.label("student_name"),
+            Paper.id.label("paper_id"),
+            Paper.title.label("paper_title"),
+            Question.stem.label("stem"),
+            Question.type.label("type"),
+            Question.options.label("options"),
+            Question.answer.label("answer"),
+            Question.explanation.label("explanation"),
+            func.row_number()
+            .over(
+                partition_by=[AnswerRecord.student_id, AnswerItem.question_id],
+                order_by=[AnswerRecord.submitted_at.desc(), AnswerItem.id.desc()],
+            )
+            .label("rn"),
+        )
+        .join(AnswerRecord, AnswerRecord.id == AnswerItem.record_id)
+        .join(User, User.id == AnswerRecord.student_id)
+        .join(Paper, Paper.id == AnswerRecord.paper_id)
+        .join(Question, Question.id == AnswerItem.question_id)
+        .where(
+            AnswerItem.is_correct.is_(False),
+            AnswerRecord.status == "graded",
+        )
+    )
+    if user.role == "student":
+        ranked = ranked.where(AnswerRecord.student_id == user.id)
+
+    ranked_subquery = ranked.subquery()
+    return (
+        select(ranked_subquery)
+        .where(ranked_subquery.c.rn == 1)
+        .order_by(ranked_subquery.c.submitted_at.desc(), ranked_subquery.c.item_id.desc())
+    )
+
+
+@router.get("/wrong-questions")
+def list_wrong_questions(
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    if user.role not in ("student", "admin"):
+        raise AccessDeniedError("只有学生可以查看自己的错题，管理员可以查看全部")
+    rows = session.execute(_wrong_questions_query(user)).mappings().all()
+    return ok({"items": [wrong_question_to_dict(row) for row in rows]})
 
 
 @router.get("/attempts/{attempt_id}")

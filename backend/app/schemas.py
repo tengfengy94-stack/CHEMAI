@@ -192,6 +192,26 @@ def question_pool_to_dict(q: Question) -> dict:
     }
 
 
+def wrong_question_to_dict(row) -> dict:
+    """错题清单的一条：最近一次答错的学生答案 + 题目与来源（设计/02 §4.8）。"""
+    return {
+        "question_id": row.question_id,
+        "student_id": row.student_id,
+        "student_name": row.student_name,
+        "stem": row.stem,
+        "type": row.type,
+        "options": row.options,
+        "student_answer": row.student_answer,
+        "answer": row.answer,
+        "explanation": row.explanation,
+        "source": "exam",
+        "paper_id": row.paper_id,
+        "paper_title": row.paper_title,
+        "attempt_id": row.attempt_id,
+        "last_wrong_at": _iso_utc(row.submitted_at),
+    }
+
+
 def attempt_to_dict(record: AnswerRecord, paper_title: str, grading_in_progress: bool) -> dict:
     return {
         "id": record.id,

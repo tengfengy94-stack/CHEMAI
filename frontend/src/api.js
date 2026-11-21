@@ -198,3 +198,5 @@ export const submitAttempt = (id, answers) =>
 
 export const retryGrading = (id) =>
   request(`/attempts/${id}/retry-grading`, { method: 'POST' })
+
+export const listWrongQuestions = () => request('/wrong-questions')

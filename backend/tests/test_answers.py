@@ -62,6 +62,11 @@ def test_invalid_answers_are_rejected_with_reason(qtype, raw, option_count, mess
         ("blank", "NaCl", "Na Cl", 0, True),
         ("blank", "CO", "Co", 0, False),
         ("blank", "NaCl", "", 0, False),
+        # 设计 02 §7：下标和电荷不归一，H₂O 与 H2O 是两个答案
+        ("blank", "H₂O", "H2O", 0, False),
+        ("blank", "NH₄⁺", "NH4+", 0, False),
+        # 全角 ASCII 仍要转半角，下标保持原样
+        ("blank", "H₂O", "Ｈ₂Ｏ", 0, True),
     ],
 )
 def test_judge_answer_follows_design_rules(qtype, standard, submitted, option_count, expected):

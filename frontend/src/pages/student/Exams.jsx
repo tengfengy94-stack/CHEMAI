@@ -5,6 +5,7 @@ import {
   Button,
   Card,
   Checkbox,
+  Drawer,
   Empty,
   Flex,
   Input,
@@ -13,6 +14,7 @@ import {
   Radio,
   Result,
   Space,
+  Spin,
   Table,
   Tag,
   Typography,
@@ -21,12 +23,13 @@ import {
   currentUser,
   getAttempt,
   listAttempts,
+  listWrongQuestions,
   logout,
   retryGrading,
   startAttempt,
   submitAttempt,
 } from '../../api.js'
-import { ATTEMPT_STATUS, QUESTION_TYPES } from '../../constants.js'
+import { ATTEMPT_STATUS, QUESTION_TYPES, WRONG_SOURCE_LABELS } from '../../constants.js'
 
 const optionLetter = (index) => String.fromCharCode(65 + index)
 
@@ -41,6 +44,9 @@ const statusTag = (attempt) => {
 const scoreText = (score) =>
   score === null || score === undefined ? '—' : Number(score).toFixed(1)
 
+const timeText = (value) =>
+  value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : ''
+
 export default function StudentExams() {
   const { message, modal } = AntApp.useApp()
   const user = currentUser()
@@ -52,6 +58,10 @@ export default function StudentExams() {
   const [submitting, setSubmitting] = useState(false)
   const [retrying, setRetrying] = useState(false)
   const [blankConfirm, setBlankConfirm] = useState(false)
+  const [wrongOpen, setWrongOpen] = useState(false)
+  const [wrongItems, setWrongItems] = useState([])
+  const [wrongLoading, setWrongLoading] = useState(false)
+  const [wrongError, setWrongError] = useState('')
 
   const fetchAttempts = useCallback(async () => {
     try {
@@ -68,6 +78,24 @@ export default function StudentExams() {
     setLoading(true)
     await fetchAttempts()
   }, [fetchAttempts])
+
+  const loadWrongQuestions = useCallback(async () => {
+    setWrongLoading(true)
+    setWrongError('')
+    try {
+      const data = await listWrongQuestions()
+      setWrongItems(data.items)
+    } catch (error) {
+      setWrongError(error.message)
+    } finally {
+      setWrongLoading(false)
+    }
+  }, [])
+
+  const openWrongQuestions = () => {
+    setWrongOpen(true)
+    loadWrongQuestions()
+  }
 
   useEffect(() => {
     let cancelled = false
@@ -278,7 +306,12 @@ export default function StudentExams() {
     return (
       <Card
         title={attempt.paper_title}
-        extra={<Button onClick={backToList}>返回列表</Button>}
+        extra={
+          <Space>
+            {graded ? <Button onClick={openWrongQuestions}>看错题</Button> : null}
+            <Button onClick={backToList}>返回列表</Button>
+          </Space>
+        }
       >
         {graded ? (
           <Result
@@ -466,6 +499,69 @@ export default function StudentExams() {
       >
         交卷后不能修改，确定一道题都不答就交卷吗？
       </Modal>
+
+      <Drawer
+        title="全部错题"
+        open={wrongOpen}
+        onClose={() => setWrongOpen(false)}
+        width={640}
+      >
+        {wrongLoading ? (
+          <Flex justify="center" style={{ padding: 48 }}>
+            <Spin />
+          </Flex>
+        ) : wrongError ? (
+          <Alert
+            type="error"
+            showIcon
+            message="错题加载失败"
+            description={wrongError}
+            action={
+              <Button size="small" onClick={loadWrongQuestions}>
+                重试
+              </Button>
+            }
+          />
+        ) : wrongItems.length === 0 ? (
+          <Empty description="还没有错题，继续保持" />
+        ) : (
+          <List
+            dataSource={wrongItems}
+            renderItem={(item) => (
+              <List.Item style={{ display: 'block' }}>
+                <Flex justify="space-between" align="flex-start" gap={12}>
+                  <Typography.Paragraph strong style={{ marginBottom: 8 }}>
+                    {item.stem}
+                  </Typography.Paragraph>
+                  <Tag>{QUESTION_TYPES[item.type] ?? item.type}</Tag>
+                </Flex>
+                {(item.options ?? []).length > 0 ? (
+                  <div style={{ marginBottom: 8 }}>
+                    {item.options.map((text, index) => (
+                      <Typography.Paragraph key={index} style={{ marginBottom: 2 }}>
+                        {optionLetter(index)}. {text}
+                      </Typography.Paragraph>
+                    ))}
+                  </div>
+                ) : null}
+                <Typography.Paragraph style={{ marginBottom: 4 }}>
+                  你的答案：{item.student_answer || '未作答'}
+                </Typography.Paragraph>
+                <Typography.Paragraph style={{ marginBottom: 4 }}>
+                  标准答案：{item.answer}
+                </Typography.Paragraph>
+                <Typography.Paragraph type="secondary" style={{ marginBottom: 4 }}>
+                  解析：{item.explanation || '暂无解析'}
+                </Typography.Paragraph>
+                <Typography.Text type="secondary">
+                  来源：{WRONG_SOURCE_LABELS[item.source] ?? item.source} ·{' '}
+                  {item.paper_title} · 最近答错 {timeText(item.last_wrong_at)}
+                </Typography.Text>
+              </List.Item>
+            )}
+          />
+        )}
+      </Drawer>
     </div>
   )
 }
