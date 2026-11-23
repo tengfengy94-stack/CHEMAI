@@ -11,6 +11,7 @@ import StudentExams from './pages/student/Exams.jsx'
 import StudentPractice from './pages/student/Practice.jsx'
 import StudentReport from './pages/student/Report.jsx'
 import StudentReview from './pages/student/Review.jsx'
+import Chat from './pages/student/Chat.jsx'
 
 // 路由守卫只管体验，真正的权限在服务端按身份再过滤一次
 function RequireAuth({ roles, children }) {
@@ -106,6 +107,14 @@ export default function App() {
         element={
           <RequireAuth roles={['student']}>
             <StudentReport />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/student/chat"
+        element={
+          <RequireAuth roles={['student', 'teacher', 'admin']}>
+            <Chat />
           </RequireAuth>
         }
       />

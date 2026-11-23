@@ -49,6 +49,14 @@ async function refreshAccessToken() {
   return body.data.access_token
 }
 
+// 并发 401 共用同一次刷新；失败时 finally 清掉单飞标志，允许下次重新尝试。
+function refreshOnce() {
+  refreshing ||= refreshAccessToken().finally(() => {
+    refreshing = null
+  })
+  return refreshing
+}
+
 async function request(path, options = {}, { allowRefresh = true } = {}) {
   const auth = loadAuth()
   const headers = { 'Content-Type': 'application/json', ...options.headers }
@@ -63,18 +71,14 @@ async function request(path, options = {}, { allowRefresh = true } = {}) {
 
   if (res.status === 401 && allowRefresh && auth?.refreshToken) {
     try {
-      refreshing ||= refreshAccessToken().finally(() => {
-        refreshing = null
-      })
-      const token = await refreshing
+      const token = await refreshOnce()
       // 重放原请求：body 是调用方传的字符串，可以直接复用
       res = await fetch(`/api${path}`, {
         ...options,
         headers: { ...headers, Authorization: `Bearer ${token}` },
       })
     } catch {
-      // 刷新失败：先清刷新标志，再清存储跳登录，不循环重试
-      refreshing = null
+      // 刷新失败：清存储跳登录，不循环重试
       clearAuth()
       redirectToLogin()
       throw new ApiError('登录已过期，请重新登录')
@@ -107,6 +111,123 @@ async function request(path, options = {}, { allowRefresh = true } = {}) {
     throw new ApiError(body.error || '操作失败，请重试')
   }
   return body.data
+}
+
+// ---- 流式对话 ----
+
+// SSE 解析：response.body 按任意大小到达，半帧先留在 buffer 里。
+export function createSseParser(onEvent) {
+  let buffer = ''
+
+  const emit = (frame) => {
+    let event = ''
+    let data = ''
+    for (const line of frame.split('\n')) {
+      if (!line || line.startsWith(':')) continue
+      const colon = line.indexOf(':')
+      const field = colon === -1 ? line : line.slice(0, colon)
+      let value = colon === -1 ? '' : line.slice(colon + 1)
+      if (value.startsWith(' ')) value = value.slice(1)
+      if (field === 'event') event = value
+      else if (field === 'data') data += (data ? '\n' : '') + value
+    }
+    if (!event && !data) return
+    let parsed = {}
+    if (data) {
+      try {
+        parsed = JSON.parse(data)
+      } catch {
+        parsed = { raw: data }
+      }
+    }
+    onEvent({ event: event || 'message', data: parsed })
+  }
+
+  return {
+    feed(text) {
+      buffer = (buffer + text).replace(/\r\n/g, '\n')
+      let index
+      while ((index = buffer.indexOf('\n\n')) !== -1) {
+        const frame = buffer.slice(0, index)
+        buffer = buffer.slice(index + 2)
+        emit(frame)
+      }
+    },
+    flush() {
+      if (buffer.trim()) emit(buffer)
+      buffer = ''
+    },
+  }
+}
+
+async function openChatStream(message, token, signal) {
+  return fetch('/api/chat/stream', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'text/event-stream',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify({ message }),
+    signal,
+  })
+}
+
+export async function streamChat(message, { signal, onEvent } = {}) {
+  const auth = loadAuth()
+  let res
+  try {
+    res = await openChatStream(message, auth?.accessToken, signal)
+  } catch (error) {
+    if (error?.name === 'AbortError') throw error
+    throw new ApiError('连不上服务器，请确认后端已启动')
+  }
+
+  if (res.status === 401 && auth?.refreshToken) {
+    try {
+      const token = await refreshOnce()
+      res = await openChatStream(message, token, signal)
+    } catch (error) {
+      if (error?.name === 'AbortError') throw error
+      clearAuth()
+      redirectToLogin()
+      throw new ApiError('登录已过期，请重新登录')
+    }
+  }
+
+  if (!res.ok) {
+    let body = null
+    try {
+      body = await res.json()
+    } catch {
+      // 流接口失败也应该返回信封；解析不了就走通用提示
+    }
+    if (res.status === 401) {
+      clearAuth()
+      redirectToLogin()
+    }
+    // 5xx 的具体原因只留在后端日志，不把配置变量名之类的内部信息带给学生。
+    if (res.status >= 500) {
+      throw new ApiError('助教暂时不可用，请稍后重试')
+    }
+    throw new ApiError(body?.error || `服务器返回异常（${res.status}）`)
+  }
+  if (!res.body) throw new ApiError('浏览器不支持流式读取')
+
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  const parser = createSseParser(onEvent || (() => {}))
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      parser.feed(decoder.decode(value, { stream: true }))
+    }
+    parser.feed(decoder.decode())
+    parser.flush()
+  } finally {
+    reader.releaseLock()
+  }
 }
 
 export const login = async (username, password) => {

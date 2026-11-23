@@ -294,6 +294,7 @@ export default function TeacherExams() {
           <Button onClick={() => navigate('/teacher/questions')}>题库</Button>
           <Button onClick={() => navigate('/teacher/knowledge')}>知识点</Button>
           <Button onClick={() => navigate('/teacher/class')}>班级报告</Button>
+          <Button onClick={() => navigate('/student/chat')}>对话</Button>
           <Button onClick={logout}>退出</Button>
         </Space>
       </Flex>

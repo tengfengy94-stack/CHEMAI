@@ -11,6 +11,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app import config, review  # review 导入即注册判分事件订阅
+from app.agent import build_chat_model
+from app.agent_routes import router as agent_router
 from app.auth import AccessDeniedError, AuthRequiredError
 from app.class_reporting import ClassExamNotFound
 from app.db import make_engine, make_session_factory
@@ -46,6 +48,8 @@ def create_app(database_url: str | None = None, seed: bool = True) -> FastAPI:
 
     app = FastAPI(title="ChemAI", lifespan=lifespan)
     app.state.session_factory = session_factory
+    # 测试可以换成返回失败/记录型模型的工厂
+    app.state.chat_model_factory = build_chat_model
 
     app.add_middleware(
         CORSMiddleware,
@@ -127,6 +131,7 @@ def create_app(database_url: str | None = None, seed: bool = True) -> FastAPI:
     app.include_router(knowledge_router)
     app.include_router(reporting_router)
     app.include_router(practice_router)
+    app.include_router(agent_router)
     return app
 
 

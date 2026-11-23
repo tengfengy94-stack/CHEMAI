@@ -21,6 +21,7 @@ export default function TeacherStudentReport() {
         </Space>
         <Space>
           <Typography.Text type="secondary">{user?.name}</Typography.Text>
+          <Button onClick={() => navigate('/student/chat')}>对话</Button>
           <Button onClick={logout}>退出</Button>
         </Space>
       </Flex>

@@ -35,6 +35,7 @@ FIELD_LABELS = {
     "target_id": "目标知识点",
     "knowledge_point_ids": "知识点",
     "student_id": "学生",
+    "message": "消息",
 }
 
 
