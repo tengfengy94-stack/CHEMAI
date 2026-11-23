@@ -235,3 +235,13 @@ export const mergeKnowledgePoint = (id, targetId) =>
     method: 'POST',
     body: JSON.stringify({ target_id: targetId }),
   })
+
+// ---- 练习：自适应出题与作答 ----
+
+export const getNextPracticeQuestion = () => request('/practice/next')
+
+export const answerPracticeQuestion = (questionId, answer, difficulty) =>
+  request('/practice/answers', {
+    method: 'POST',
+    body: JSON.stringify({ question_id: questionId, answer, difficulty }),
+  })

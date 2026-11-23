@@ -104,6 +104,16 @@ class ReviewAnswerRequest(BaseModel):
     student_answer: str = ""
 
 
+class PracticeAnswerRequest(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    question_id: StrictInt
+    # 长度在 practice.answer_question 里检查，与考试、复习共用 500 字上限
+    answer: str = ""
+    # 出题时实际给出的档位；放宽难度时可能不是学生当前目标档
+    difficulty: Literal[1, 2, 3]
+
+
 class KnowledgePointCreate(BaseModel):
     model_config = ConfigDict(extra="ignore")
 

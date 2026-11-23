@@ -13,6 +13,7 @@ export default function StudentHeader({ title }) {
       <Space>
         <Button onClick={() => navigate('/student/exams')}>考试</Button>
         <Button onClick={() => navigate('/student/review')}>复习</Button>
+        <Button onClick={() => navigate('/student/practice')}>练习</Button>
         <Button onClick={() => navigate('/student/report')}>学习报告</Button>
         <Typography.Text type="secondary">
           {user ? `${user.name}（${user.username}）` : ''}

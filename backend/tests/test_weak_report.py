@@ -1,10 +1,11 @@
-"""弱项统计：错误率口径、样本门槛、排序、无数据与权限（第 07 章）。"""
+"""弱项统计：错误率口径、样本门槛、排序、无数据与权限（第 07/09 章）。"""
 import pytest
 from sqlalchemy import select
 
 import app.events as events
+from app import clock
 from app.db import make_engine, make_session_factory
-from app.models import User
+from app.models import PracticeRecord, User
 from exam_helpers import (
     QUESTION,
     attempt_for_paper,
@@ -294,6 +295,24 @@ def user_id(database_url, username):
     return value
 
 
+def add_practice(database_url, student_id, question_id, is_correct, difficulty=2):
+    """直接写一条练习记录，避免测试依赖练习接口。"""
+    engine = make_engine(database_url)
+    factory = make_session_factory(engine)
+    with factory() as session:
+        session.add(
+            PracticeRecord(
+                student_id=student_id,
+                question_id=question_id,
+                difficulty=difficulty,
+                is_correct=is_correct,
+                created_at=clock.utcnow(),
+            )
+        )
+        session.commit()
+    engine.dispose()
+
+
 def test_merge_recomputes_weak_report(client, classroom):
     t1 = login(client, "t1")
     s1 = login(client, "s1")
@@ -360,3 +379,96 @@ def test_visibility_and_admin_target(client, classroom, database_url):
     as_admin = weak(client, admin, student_id=s1_id)
     assert as_admin == own
     assert as_admin["items"][0]["answered_count"] == 2
+
+
+def test_only_practice_records_count_as_learning_data(client, classroom, database_url):
+    t1 = login(client, "t1")
+    s1 = login(client, "s1")
+    s1_id = user_id(database_url, "s1")
+    kp = point(client, t1, "氧化还原")
+    q = question(client, t1, "只练过")
+    link(client, t1, q["id"], [kp["id"]])
+
+    add_practice(database_url, s1_id, q["id"], False)
+    data = weak(client, s1)
+    assert data["has_data"] is True
+    assert data["items"] == []  # 练习一次，未到样本门槛
+
+    add_practice(database_url, s1_id, q["id"], True)
+    assert weak(client, s1)["items"] == [
+        {
+            "knowledge_point_id": kp["id"],
+            "name": "氧化还原",
+            "answered_count": 2,
+            "wrong_count": 1,
+            "error_rate": 50.0,
+        }
+    ]
+
+
+def test_exam_and_practice_merge_meets_threshold(client, classroom, database_url):
+    t1 = login(client, "t1")
+    s1 = login(client, "s1")
+    s1_id = user_id(database_url, "s1")
+    kp = point(client, t1, "电化学")
+    q = question(client, t1, "考试加练习")
+    link(client, t1, q["id"], [kp["id"]])
+
+    take(client, t1, s1, classroom, [q], {q["id"]: "B"}, "考试错一次")
+    add_practice(database_url, s1_id, q["id"], True)
+
+    assert weak(client, s1)["items"] == [
+        {
+            "knowledge_point_id": kp["id"],
+            "name": "电化学",
+            "answered_count": 2,
+            "wrong_count": 1,
+            "error_rate": 50.0,
+        }
+    ]
+
+
+def test_practice_without_knowledge_point_is_ignored(client, classroom, database_url):
+    t1 = login(client, "t1")
+    s1 = login(client, "s1")
+    s1_id = user_id(database_url, "s1")
+    q = question(client, t1, "练习未归类")
+
+    add_practice(database_url, s1_id, q["id"], False)
+
+    data = weak(client, s1)
+    assert data["has_data"] is True
+    assert data["items"] == []
+
+
+def test_merge_recomputes_practice_records(client, classroom, database_url):
+    t1 = login(client, "t1")
+    s1 = login(client, "s1")
+    s1_id = user_id(database_url, "s1")
+    source = point(client, t1, "氧化还原")
+    target = point(client, t1, "电化学")
+    q1 = question(client, t1, "氧化还原练习题")
+    q2 = question(client, t1, "电化学练习题")
+    link(client, t1, q1["id"], [source["id"]])
+    link(client, t1, q2["id"], [target["id"]])
+
+    for _ in range(2):
+        add_practice(database_url, s1_id, q1["id"], False)
+        add_practice(database_url, s1_id, q2["id"], False)
+
+    before = weak(client, s1)["items"]
+    assert {item["name"] for item in before} == {"氧化还原", "电化学"}
+
+    merged = client.post(
+        f"/api/knowledge-points/{source['id']}/merge",
+        headers=auth(t1),
+        json={"target_id": target["id"]},
+    )
+    assert merged.status_code == 200, merged.text
+
+    after = weak(client, s1)["items"]
+    assert len(after) == 1
+    assert after[0]["knowledge_point_id"] == target["id"]
+    assert after[0]["answered_count"] == 4
+    assert after[0]["wrong_count"] == 4
+    assert after[0]["error_rate"] == 100.0

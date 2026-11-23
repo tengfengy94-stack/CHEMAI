@@ -170,6 +170,27 @@ class ReviewTask(Base):
     )
 
 
+class PracticeRecord(Base):
+    """练习作答记录：每答一道追加一条，只增不改。
+
+    difficulty 是出题时实际给出的档位；候选放宽时可能不是学生的目标档。
+    """
+
+    __tablename__ = "practice_records"
+    __table_args__ = (
+        Index("ix_practice_records_student_id", "student_id", "id"),
+        Index("ix_practice_records_question_id", "question_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    student_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    question_id: Mapped[int] = mapped_column(ForeignKey("questions.id"), nullable=False)
+    # 1 / 2 / 3
+    difficulty: Mapped[int] = mapped_column(Integer, nullable=False)
+    is_correct: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
 class KnowledgePoint(Base):
     """知识点：parent_id 为空是根，指向根是第二层，不允许第三层。"""
 

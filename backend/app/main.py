@@ -16,6 +16,7 @@ from app.db import make_engine, make_session_factory
 from app.envelope import fail
 from app.knowledge import KnowledgePointNotFound
 from app.knowledge_routes import router as knowledge_router
+from app.practice_routes import router as practice_router
 from app.reporting_routes import router as reporting_router
 from app.review import ReviewTaskNotFound
 from app.review_routes import router as review_router
@@ -120,6 +121,7 @@ def create_app(database_url: str | None = None, seed: bool = True) -> FastAPI:
     app.include_router(review_router)
     app.include_router(knowledge_router)
     app.include_router(reporting_router)
+    app.include_router(practice_router)
     return app
 
 

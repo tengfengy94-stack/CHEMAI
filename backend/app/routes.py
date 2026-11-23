@@ -28,6 +28,7 @@ from app.models import (
     Class,
     Paper,
     PaperQuestion,
+    PracticeRecord,
     Question,
     QuestionKnowledgePoint,
     User,
@@ -492,6 +493,15 @@ def delete_question(
     count = papers_using_question(session, question_id)
     if count > 0:
         return fail(f"这道题已被 {count} 份卷子使用", 409)
+
+    # 练习历史是弱项统计的事实来源，删题不能把它悄悄抹掉
+    practice_count = session.scalar(
+        select(func.count())
+        .select_from(PracticeRecord)
+        .where(PracticeRecord.question_id == question_id)
+    )
+    if practice_count:
+        return fail("这道题已被学生练习过，不能删除", 409)
 
     # 知识点关联属于复习模块的数据，但题目删除必须先把外键清掉
     session.execute(

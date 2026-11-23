@@ -6,6 +6,7 @@ import QuestionBank from './pages/teacher/QuestionBank.jsx'
 import TeacherExams from './pages/teacher/Exams.jsx'
 import Knowledge from './pages/teacher/Knowledge.jsx'
 import StudentExams from './pages/student/Exams.jsx'
+import StudentPractice from './pages/student/Practice.jsx'
 import StudentReport from './pages/student/Report.jsx'
 import StudentReview from './pages/student/Review.jsx'
 
@@ -71,6 +72,14 @@ export default function App() {
         element={
           <RequireAuth roles={['student']}>
             <StudentReview />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/student/practice"
+        element={
+          <RequireAuth roles={['student']}>
+            <StudentPractice />
           </RequireAuth>
         }
       />

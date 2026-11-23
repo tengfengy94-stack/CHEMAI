@@ -1,60 +1,76 @@
-"""学生弱项：按知识点汇总已判分考试的逐题作答。
+"""学生弱项：按知识点汇总已判分考试的逐题作答和练习记录。
 
 错误率 = 错题数 ÷ 作答数；只取作答数 ≥ 2 的前三项。
-本次数据源只有考试逐题作答；练习接入时在这里扩展"作答事实"来源。
+两路作答事实在这里合并，上层排序与门槛不区分来源；复习作答不进入统计。
 """
 from decimal import ROUND_HALF_UP, Decimal
 
-from sqlalchemy import case, func, select
+from sqlalchemy import case, func, select, union_all
 from sqlalchemy.orm import Session
 
-from app.models import AnswerItem, AnswerRecord, KnowledgePoint, QuestionKnowledgePoint
+from app.models import (
+    AnswerItem,
+    AnswerRecord,
+    KnowledgePoint,
+    PracticeRecord,
+    QuestionKnowledgePoint,
+)
 
 MIN_ANSWERS = 2
 TOP_N = 3
 
 
-def _graded_answer_filters(student_id: int):
-    """统计与 has_data 共用同一套“已判分、对错已写入”的过滤条件。"""
-    return (
-        AnswerRecord.student_id == student_id,
-        AnswerRecord.status == "graded",
-        AnswerItem.is_correct.is_not(None),
+def _answer_facts(student_id: int):
+    """统一作答事实：已判分考试的逐题作答 + 练习记录。
+
+    列名对齐成 question_id / is_correct，后面只连接知识点一次。
+    """
+    exam = (
+        select(
+            AnswerItem.question_id.label("question_id"),
+            AnswerItem.is_correct.label("is_correct"),
+        )
+        .join(AnswerRecord, AnswerRecord.id == AnswerItem.record_id)
+        .where(
+            AnswerRecord.student_id == student_id,
+            AnswerRecord.status == "graded",
+            AnswerItem.is_correct.is_not(None),
+        )
     )
+    practice = select(
+        PracticeRecord.question_id.label("question_id"),
+        PracticeRecord.is_correct.label("is_correct"),
+    ).where(PracticeRecord.student_id == student_id)
+    return union_all(exam, practice).subquery("answer_facts")
 
 
 def _has_data(session: Session, student_id: int) -> bool:
-    count = session.scalar(
-        select(func.count())
-        .select_from(AnswerItem)
-        .join(AnswerRecord, AnswerRecord.id == AnswerItem.record_id)
-        .where(*_graded_answer_filters(student_id))
-    )
+    facts = _answer_facts(student_id)
+    count = session.scalar(select(func.count()).select_from(facts))
     return bool(count)
 
 
 def weak_report(session: Session, student_id: int) -> dict:
+    facts = _answer_facts(student_id)
     wrong_count = func.sum(
-        case((AnswerItem.is_correct.is_(False), 1), else_=0)
+        case((facts.c.is_correct.is_(False), 1), else_=0)
     ).label("wrong_count")
     rows = session.execute(
         select(
             KnowledgePoint.id,
             KnowledgePoint.name,
-            func.count(AnswerItem.id).label("answered_count"),
+            func.count().label("answered_count"),
             wrong_count,
         )
-        .select_from(AnswerItem)
-        .join(AnswerRecord, AnswerRecord.id == AnswerItem.record_id)
+        .select_from(facts)
         .join(
             QuestionKnowledgePoint,
-            QuestionKnowledgePoint.question_id == AnswerItem.question_id,
+            QuestionKnowledgePoint.question_id == facts.c.question_id,
         )
         .join(
             KnowledgePoint,
             KnowledgePoint.id == QuestionKnowledgePoint.knowledge_point_id,
         )
-        .where(*_graded_answer_filters(student_id))
         .group_by(KnowledgePoint.id, KnowledgePoint.name)
     ).all()
 

@@ -252,6 +252,19 @@ def test_delete_unused_question(client, make_user):
     assert client.get("/api/questions", headers=auth(token)).json()["data"]["total"] == 0
 
 
+def test_delete_approved_but_unpracticed_question(client, make_user):
+    """已通过但没被练习过的题仍可删除；练习记录引用后才拦。"""
+    make_user("t1", role="teacher")
+    token = login(client, "t1")
+    q = create(client, token)
+    approved = set_status(client, token, q["id"], "approved")
+    assert approved.status_code == 200, approved.text
+
+    r = client.delete(f"/api/questions/{q['id']}", headers=auth(token))
+    assert r.status_code == 200, r.text
+    assert client.get("/api/questions", headers=auth(token)).json()["data"]["total"] == 0
+
+
 def test_usage_reports_zero_papers(client, make_user):
     make_user("t1", role="teacher")
     token = login(client, "t1")
