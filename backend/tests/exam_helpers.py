@@ -71,3 +71,39 @@ def make_approved(client, token, **changes):
     question = create_question(client, token, **changes)
     approve_question(client, token, question["id"])
     return question
+
+
+def paper_with(client, token, class_id, questions, title):
+    """建卷、按顺序加题、发布给班级，返回卷子。"""
+    paper = create_paper(client, token, title)
+    for question in questions:
+        r = add_question(client, token, paper["id"], question["id"])
+        assert r.status_code == 200, r.text
+    r = publish(client, token, paper["id"], class_id)
+    assert r.status_code == 200, r.text
+    return paper
+
+
+def attempt_for_paper(client, token, paper_id):
+    items = client.get("/api/attempts", headers=auth(token)).json()["data"]["items"]
+    return next(item for item in items if item["paper_id"] == paper_id)
+
+
+def submit_answers(client, token, attempt, answers):
+    """开始并按 {question_id: answer} 交卷，返回判分后的作答记录。"""
+    started = client.post(f"/api/attempts/{attempt['id']}/start", headers=auth(token))
+    assert started.status_code == 200, started.text
+    payload = [{"question_id": qid, "answer": text} for qid, text in answers.items()]
+    result = client.post(
+        f"/api/attempts/{attempt['id']}/submit",
+        headers=auth(token),
+        json={"answers": payload},
+    )
+    assert result.status_code == 200, result.text
+    return result.json()["data"]
+
+
+def wrong_questions(client, token):
+    r = client.get("/api/wrong-questions", headers=auth(token))
+    assert r.status_code == 200, r.text
+    return r.json()["data"]["items"]

@@ -200,3 +200,16 @@ export const retryGrading = (id) =>
   request(`/attempts/${id}/retry-grading`, { method: 'POST' })
 
 export const listWrongQuestions = () => request('/wrong-questions')
+
+// ---- 复习与报告 ----
+
+export const listReviewTasks = (scope = 'due') =>
+  request(`/review/tasks?scope=${encodeURIComponent(scope)}`)
+
+export const answerReviewTask = (id, studentAnswer) =>
+  request(`/review/tasks/${id}/answer`, {
+    method: 'POST',
+    body: JSON.stringify({ student_answer: studentAnswer }),
+  })
+
+export const getWeakReport = () => request('/reports/weak')

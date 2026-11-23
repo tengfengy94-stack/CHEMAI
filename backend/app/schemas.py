@@ -3,11 +3,11 @@
 字段格式不对（比如难度传了文字）由 Pydantic 拦，在 main.py 里翻成中文；
 业务规则（题型、难度范围、选项、答案）在 validate_new_question 里统一检查。
 """
-from datetime import datetime, timezone
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StrictInt
 
+from app import clock
 from app.answers import QUESTION_TYPES, AnswerError, normalize_answer
 from app.models import AnswerRecord, Paper, PaperQuestion, Question
 
@@ -28,6 +28,13 @@ FIELD_LABELS = {
     "question_id": "题目",
     "class_id": "班级",
     "answers": "答案",
+    "student_answer": "作答",
+    "name": "名称",
+    "parent_id": "上级知识点",
+    "aliases": "别名",
+    "target_id": "目标知识点",
+    "knowledge_point_ids": "知识点",
+    "student_id": "学生",
 }
 
 
@@ -90,6 +97,40 @@ class AttemptSubmit(BaseModel):
     answers: list[AnswerInput] = Field(default_factory=list)
 
 
+class ReviewAnswerRequest(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    # 长度在路由里检查，与考试交卷共用 500 字上限
+    student_answer: str = ""
+
+
+class KnowledgePointCreate(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    name: str
+    parent_id: StrictInt | None = None
+    aliases: list[str] = Field(default_factory=list)
+
+
+class KnowledgePointUpdate(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    name: str | None = None
+    aliases: list[str] | None = None
+
+
+class KnowledgePointMerge(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    target_id: StrictInt
+
+
+class QuestionKnowledgePointsUpdate(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    knowledge_point_ids: list[StrictInt] = Field(default_factory=list)
+
+
 def validate_new_question(body: QuestionCreate) -> dict:
     """检查规则并整理字段，返回可以直接存库的值。"""
     stem = body.stem.strip()
@@ -130,13 +171,6 @@ def validate_new_question(body: QuestionCreate) -> dict:
     }
 
 
-def _iso_utc(dt: datetime) -> str:
-    # SQLite 取回来的时间不带时区，按存入时的 UTC 补上
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
-
-
 def question_to_dict(q: Question) -> dict:
     return {
         "id": q.id,
@@ -148,7 +182,7 @@ def question_to_dict(q: Question) -> dict:
         "difficulty": q.difficulty,
         "status": q.status,
         "created_by": q.created_by,
-        "created_at": _iso_utc(q.created_at),
+        "created_at": clock.iso_utc(q.created_at),
     }
 
 
@@ -160,17 +194,13 @@ def question_to_public_dict(q: Question) -> dict:
     return data
 
 
-def _iso_utc_or_none(dt: datetime | None) -> str | None:
-    return _iso_utc(dt) if dt else None
-
-
 def paper_to_dict(paper: Paper, question_count: int = 0) -> dict:
     return {
         "id": paper.id,
         "title": paper.title,
         "status": paper.status,
         "created_by": paper.created_by,
-        "created_at": _iso_utc(paper.created_at),
+        "created_at": clock.iso_utc(paper.created_at),
         "question_count": question_count,
     }
 
@@ -208,7 +238,7 @@ def wrong_question_to_dict(row) -> dict:
         "paper_id": row.paper_id,
         "paper_title": row.paper_title,
         "attempt_id": row.attempt_id,
-        "last_wrong_at": _iso_utc(row.submitted_at),
+        "last_wrong_at": clock.iso_utc(row.submitted_at),
     }
 
 
@@ -220,8 +250,8 @@ def attempt_to_dict(record: AnswerRecord, paper_title: str, grading_in_progress:
         "status": record.status,
         "score": record.score,
         "grading_in_progress": grading_in_progress,
-        "created_at": _iso_utc(record.created_at),
-        "started_at": _iso_utc_or_none(record.started_at),
-        "submitted_at": _iso_utc_or_none(record.submitted_at),
-        "graded_at": _iso_utc_or_none(record.graded_at),
+        "created_at": clock.iso_utc(record.created_at),
+        "started_at": clock.iso_utc(record.started_at),
+        "submitted_at": clock.iso_utc(record.submitted_at),
+        "graded_at": clock.iso_utc(record.graded_at),
     }

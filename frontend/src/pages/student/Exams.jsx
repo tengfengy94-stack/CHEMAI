@@ -20,18 +20,16 @@ import {
   Typography,
 } from 'antd'
 import {
-  currentUser,
   getAttempt,
   listAttempts,
   listWrongQuestions,
-  logout,
   retryGrading,
   startAttempt,
   submitAttempt,
 } from '../../api.js'
 import { ATTEMPT_STATUS, QUESTION_TYPES, WRONG_SOURCE_LABELS } from '../../constants.js'
-
-const optionLetter = (index) => String.fromCharCode(65 + index)
+import { optionLetter, timeText } from '../../format.js'
+import StudentHeader from './StudentHeader.jsx'
 
 const statusTag = (attempt) => {
   if (attempt.status === 'submitted' && attempt.grading_in_progress) {
@@ -44,12 +42,8 @@ const statusTag = (attempt) => {
 const scoreText = (score) =>
   score === null || score === undefined ? '—' : Number(score).toFixed(1)
 
-const timeText = (value) =>
-  value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : ''
-
 export default function StudentExams() {
   const { message, modal } = AntApp.useApp()
-  const user = currentUser()
   const [attempts, setAttempts] = useState([])
   const [loading, setLoading] = useState(true)
   const [mode, setMode] = useState('list')
@@ -445,17 +439,7 @@ export default function StudentExams() {
 
   return (
     <div style={{ padding: 24, maxWidth: 1000, margin: '0 auto' }}>
-      <Flex justify="space-between" align="center" style={{ marginBottom: 16 }}>
-        <Typography.Title level={3} style={{ margin: 0 }}>
-          考试
-        </Typography.Title>
-        <Space>
-          <Typography.Text type="secondary">
-            {user ? `${user.name}（${user.username}）` : ''}
-          </Typography.Text>
-          <Button onClick={logout}>退出</Button>
-        </Space>
-      </Flex>
+      <StudentHeader title="考试" />
 
       {mode === 'list' ? (
         <Card

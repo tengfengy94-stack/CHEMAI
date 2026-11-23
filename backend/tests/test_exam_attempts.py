@@ -15,6 +15,7 @@ from exam_helpers import (
     QUESTION,
     add_question,
     approve_question,
+    attempt_for_paper,
     create_paper,
     create_question,
     make_approved,
@@ -35,11 +36,6 @@ def build_exam(client, teacher_token, class_id, question_specs):
     r = publish(client, teacher_token, paper["id"], class_id)
     assert r.status_code == 200, r.text
     return paper, questions
-
-
-def attempt_for_paper(client, token, paper_id):
-    items = client.get("/api/attempts", headers=auth(token)).json()["data"]["items"]
-    return next(item for item in items if item["paper_id"] == paper_id)
 
 
 def answer_items(database_url, record_id):

@@ -10,16 +10,21 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from app import config
+from app import config, review  # review 导入即注册判分事件订阅
 from app.auth import AccessDeniedError, AuthRequiredError
 from app.db import make_engine, make_session_factory
 from app.envelope import fail
+from app.knowledge import KnowledgePointNotFound
+from app.knowledge_routes import router as knowledge_router
+from app.reporting_routes import router as reporting_router
+from app.review import ReviewTaskNotFound
+from app.review_routes import router as review_router
 from app.routes import (
     AttemptNotFound,
     ClassNotFound,
     PaperNotFound,
     QuestionNotFound,
-    router,
+    router as exam_router,
 )
 from app.schemas import FIELD_LABELS
 from app.seed import seed_if_empty
@@ -91,6 +96,14 @@ def create_app(database_url: str | None = None, seed: bool = True) -> FastAPI:
     async def class_not_found(_req: Request, _exc: ClassNotFound):
         return fail("班级不存在", 404)
 
+    @app.exception_handler(ReviewTaskNotFound)
+    async def review_task_not_found(_req: Request, _exc: ReviewTaskNotFound):
+        return fail("复习任务不存在", 404)
+
+    @app.exception_handler(KnowledgePointNotFound)
+    async def knowledge_point_not_found(_req: Request, _exc: KnowledgePointNotFound):
+        return fail("知识点不存在", 404)
+
     @app.exception_handler(AuthRequiredError)
     async def auth_required(_req: Request, exc: AuthRequiredError):
         return fail(str(exc), 401)
@@ -103,7 +116,10 @@ def create_app(database_url: str | None = None, seed: bool = True) -> FastAPI:
     async def unexpected_error(_req: Request, _exc: Exception):
         return fail("服务器出错了，请稍后重试", 500)
 
-    app.include_router(router)
+    app.include_router(exam_router)
+    app.include_router(review_router)
+    app.include_router(knowledge_router)
+    app.include_router(reporting_router)
     return app
 
 

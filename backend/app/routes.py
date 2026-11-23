@@ -2,13 +2,14 @@
 归属判定走 app.auth 的 require_* 函数。
 """
 import jwt
-from datetime import timedelta, timezone
+from datetime import timedelta
 
 from fastapi import APIRouter, Depends, Request
-from sqlalchemy import func, or_, select, text, update
+from sqlalchemy import delete, func, or_, select, text, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
+from app import clock, events
 from app.answers import judge_answer, score_for
 from app.auth import (
     AccessDeniedError,
@@ -28,6 +29,7 @@ from app.models import (
     Paper,
     PaperQuestion,
     Question,
+    QuestionKnowledgePoint,
     User,
     utcnow,
 )
@@ -149,16 +151,10 @@ def require_attempt_owner(record: AnswerRecord, user: User) -> None:
         raise AccessDeniedError("只能操作自己的作答记录")
 
 
-def _as_utc(value):
-    if value is None or value.tzinfo is not None:
-        return value
-    return value.replace(tzinfo=timezone.utc)
-
-
 def _grading_in_progress(record: AnswerRecord) -> bool:
     if record.status != "submitted" or record.score is not None:
         return False
-    started = _as_utc(record.grading_started_at)
+    started = clock.as_utc(record.grading_started_at)
     if started is None:
         return False
     return (utcnow() - started).total_seconds() < GRADING_LEASE_SECONDS
@@ -242,6 +238,13 @@ def grade_record(session: Session, record: AnswerRecord) -> None:
     record.status = "graded"
     record.graded_at = utcnow()
     record.grading_started_at = None
+    # 复习模块订阅这个事件；写任务与判分在同一个事务里，失败一起回滚。
+    events.publish(
+        events.ATTEMPT_GRADED,
+        session=session,
+        record=record,
+        graded_at=record.graded_at,
+    )
     session.commit()
 
 
@@ -490,6 +493,12 @@ def delete_question(
     if count > 0:
         return fail(f"这道题已被 {count} 份卷子使用", 409)
 
+    # 知识点关联属于复习模块的数据，但题目删除必须先把外键清掉
+    session.execute(
+        delete(QuestionKnowledgePoint).where(
+            QuestionKnowledgePoint.question_id == question_id
+        )
+    )
     session.delete(question)
     session.commit()
     return ok({"deleted": question_id})

@@ -6,10 +6,10 @@ from exam_helpers import (
     BLANK_QUESTION,
     MULTIPLE_QUESTION,
     QUESTION,
-    add_question,
-    create_paper,
+    attempt_for_paper,
     make_approved,
-    publish,
+    paper_with,
+    wrong_questions as wrong_list,
 )
 from helpers import auth, login
 
@@ -24,21 +24,6 @@ def classroom(make_user, make_class):
     return class_id
 
 
-def paper_with(client, token, class_id, questions, title):
-    paper = create_paper(client, token, title)
-    for question in questions:
-        r = add_question(client, token, paper["id"], question["id"])
-        assert r.status_code == 200, r.text
-    r = publish(client, token, paper["id"], class_id)
-    assert r.status_code == 200, r.text
-    return paper
-
-
-def attempt_for_paper(client, token, paper_id):
-    items = client.get("/api/attempts", headers=auth(token)).json()["data"]["items"]
-    return next(item for item in items if item["paper_id"] == paper_id)
-
-
 def submit(client, token, attempt, answers):
     started = client.post(f"/api/attempts/{attempt['id']}/start", headers=auth(token))
     assert started.status_code == 200, started.text
@@ -49,12 +34,6 @@ def submit(client, token, attempt, answers):
     )
     assert result.status_code == 200, result.text
     return result.json()["data"]
-
-
-def wrong_list(client, token):
-    r = client.get("/api/wrong-questions", headers=auth(token))
-    assert r.status_code == 200, r.text
-    return r.json()["data"]["items"]
 
 
 def by_question(items, question_id):
