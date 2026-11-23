@@ -472,3 +472,19 @@ def test_merge_recomputes_practice_records(client, classroom, database_url):
     assert after[0]["answered_count"] == 4
     assert after[0]["wrong_count"] == 4
     assert after[0]["error_rate"] == 100.0
+
+
+def test_only_all_correct_point_returns_empty_weak_list(client, classroom):
+    """数据够但全对：不进入弱项；旧接口仍返回 has_data=true。"""
+    t1 = login(client, "t1")
+    s1 = login(client, "s1")
+    kp = point(client, t1, "元素周期律")
+    q = question(client, t1, "全对唯一知识点")
+    link(client, t1, q["id"], [kp["id"]])
+
+    take(client, t1, s1, classroom, [q], {q["id"]: "A"}, "全对一")
+    take(client, t1, s1, classroom, [q], {q["id"]: "A"}, "全对二")
+
+    data = weak(client, s1)
+    assert data["has_data"] is True
+    assert data["items"] == []

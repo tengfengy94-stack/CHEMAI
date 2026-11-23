@@ -5,6 +5,8 @@ import LoginPage from './pages/LoginPage.jsx'
 import QuestionBank from './pages/teacher/QuestionBank.jsx'
 import TeacherExams from './pages/teacher/Exams.jsx'
 import Knowledge from './pages/teacher/Knowledge.jsx'
+import TeacherClassReport from './pages/teacher/TeacherClassReport.jsx'
+import TeacherStudentReport from './pages/teacher/StudentReport.jsx'
 import StudentExams from './pages/student/Exams.jsx'
 import StudentPractice from './pages/student/Practice.jsx'
 import StudentReport from './pages/student/Report.jsx'
@@ -56,6 +58,22 @@ export default function App() {
         element={
           <RequireAuth roles={['teacher', 'admin']}>
             <Knowledge />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/teacher/class"
+        element={
+          <RequireAuth roles={['teacher', 'admin']}>
+            <TeacherClassReport />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/teacher/students/:studentId/report"
+        element={
+          <RequireAuth roles={['teacher', 'admin']}>
+            <TeacherStudentReport />
           </RequireAuth>
         }
       />

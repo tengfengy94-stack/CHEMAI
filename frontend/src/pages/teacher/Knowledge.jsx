@@ -315,6 +315,7 @@ export default function Knowledge() {
           <Typography.Text type="secondary">{user?.name}</Typography.Text>
           <Button onClick={() => navigate('/teacher/questions')}>题库</Button>
           <Button onClick={() => navigate('/teacher/exams')}>组卷</Button>
+          <Button onClick={() => navigate('/teacher/class')}>班级报告</Button>
           <Button onClick={logout}>退出</Button>
           <Button type="primary" icon={<PlusOutlined />} onClick={() => openCreate(null)}>
             新建知识点

@@ -214,6 +214,17 @@ export const answerReviewTask = (id, studentAnswer) =>
 
 export const getWeakReport = () => request('/reports/weak')
 
+export const getMyReport = () => request('/reports/me')
+
+export const getStudentReport = (studentId) => request(`/reports/students/${studentId}`)
+
+export const getMyClasses = listClasses
+
+export const getClassReport = (classId) => request(`/reports/classes/${classId}`)
+
+export const getClassExamReport = (classId, paperId) =>
+  request(`/reports/classes/${classId}/exams/${paperId}`)
+
 // ---- 知识点：两层树、建/改/合并 ----
 
 export const listKnowledgePoints = () => request('/knowledge-points')

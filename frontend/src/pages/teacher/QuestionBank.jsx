@@ -417,6 +417,7 @@ export default function QuestionBank() {
             </Typography.Text>
             <Button onClick={() => navigate('/teacher/exams')}>组卷</Button>
             <Button onClick={() => navigate('/teacher/knowledge')}>知识点</Button>
+            <Button onClick={() => navigate('/teacher/class')}>班级报告</Button>
             <Button onClick={logout}>退出</Button>
             <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
               新建题目

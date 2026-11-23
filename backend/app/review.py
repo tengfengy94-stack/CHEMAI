@@ -4,7 +4,7 @@
 """
 from datetime import datetime, timedelta
 
-from sqlalchemy import case, select, update
+from sqlalchemy import case, func, select, update
 from sqlalchemy.orm import Session
 
 from app import clock, events
@@ -98,11 +98,7 @@ def list_tasks(
         stmt = stmt.where(ReviewTask.student_id == student_id)
     if scope == "due":
         day = clock.business_today()
-        stmt = stmt.where(
-            ReviewTask.level < LEVEL_MAX,
-            ReviewTask.due_on.is_not(None),
-            ReviewTask.due_on <= day,
-        )
+        stmt = stmt.where(*_due_conditions(day))
     # 已出队的任务 due_on 为空，排在最后
     stmt = stmt.order_by(
         case((ReviewTask.due_on.is_(None), 1), else_=0),
@@ -110,6 +106,28 @@ def list_tasks(
         ReviewTask.id,
     )
     return session.execute(stmt).all()
+
+
+def _due_conditions(day):
+    """到期列表与报告计数共用的条件，避免两处口径漂移。"""
+    return (
+        ReviewTask.level < LEVEL_MAX,
+        ReviewTask.due_on.is_not(None),
+        ReviewTask.due_on <= day,
+    )
+
+
+def due_task_count(session: Session, student_id: int) -> int:
+    """今天及以前到期的任务条数；已出队（5 级）不计。"""
+    day = clock.business_today()
+    return (
+        session.scalar(
+            select(func.count())
+            .select_from(ReviewTask)
+            .where(ReviewTask.student_id == student_id, *_due_conditions(day))
+        )
+        or 0
+    )
 
 
 def task_to_dict(task: ReviewTask, question: Question, student: User | None = None) -> dict:

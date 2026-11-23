@@ -25,4 +25,4 @@ export const dueLabel = (isoDate) => {
   return `${month}月${day}日`
 }
 
-export const formatErrorRate = (value) => `${Number(value ?? 0).toFixed(1)}%`
+export const formatPercent = (value) => `${Number(value ?? 0).toFixed(1)}%`

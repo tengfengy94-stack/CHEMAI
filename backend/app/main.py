@@ -12,6 +12,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app import config, review  # review 导入即注册判分事件订阅
 from app.auth import AccessDeniedError, AuthRequiredError
+from app.class_reporting import ClassExamNotFound
 from app.db import make_engine, make_session_factory
 from app.envelope import fail
 from app.knowledge import KnowledgePointNotFound
@@ -96,6 +97,10 @@ def create_app(database_url: str | None = None, seed: bool = True) -> FastAPI:
     @app.exception_handler(ClassNotFound)
     async def class_not_found(_req: Request, _exc: ClassNotFound):
         return fail("班级不存在", 404)
+
+    @app.exception_handler(ClassExamNotFound)
+    async def class_exam_not_found(_req: Request, _exc: ClassExamNotFound):
+        return fail("这次考试不存在", 404)
 
     @app.exception_handler(ReviewTaskNotFound)
     async def review_task_not_found(_req: Request, _exc: ReviewTaskNotFound):
