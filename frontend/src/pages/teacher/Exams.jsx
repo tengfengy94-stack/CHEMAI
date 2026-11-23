@@ -292,6 +292,7 @@ export default function TeacherExams() {
         <Space>
           <Typography.Text type="secondary">{user?.name}</Typography.Text>
           <Button onClick={() => navigate('/teacher/questions')}>题库</Button>
+          <Button onClick={() => navigate('/teacher/knowledge')}>知识点</Button>
           <Button onClick={logout}>退出</Button>
         </Space>
       </Flex>

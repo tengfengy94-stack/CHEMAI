@@ -213,3 +213,25 @@ export const answerReviewTask = (id, studentAnswer) =>
   })
 
 export const getWeakReport = () => request('/reports/weak')
+
+// ---- 知识点：两层树、建/改/合并 ----
+
+export const listKnowledgePoints = () => request('/knowledge-points')
+
+export const createKnowledgePoint = ({ name, parentId = null, aliases = [] }) =>
+  request('/knowledge-points', {
+    method: 'POST',
+    body: JSON.stringify({ name, parent_id: parentId, aliases }),
+  })
+
+export const updateKnowledgePoint = (id, { name, aliases }) =>
+  request(`/knowledge-points/${id}`, {
+    method: 'PUT',
+    body: JSON.stringify({ name, aliases }),
+  })
+
+export const mergeKnowledgePoint = (id, targetId) =>
+  request(`/knowledge-points/${id}/merge`, {
+    method: 'POST',
+    body: JSON.stringify({ target_id: targetId }),
+  })

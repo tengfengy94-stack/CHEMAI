@@ -4,6 +4,7 @@ import { homeFor } from './constants.js'
 import LoginPage from './pages/LoginPage.jsx'
 import QuestionBank from './pages/teacher/QuestionBank.jsx'
 import TeacherExams from './pages/teacher/Exams.jsx'
+import Knowledge from './pages/teacher/Knowledge.jsx'
 import StudentExams from './pages/student/Exams.jsx'
 import StudentReport from './pages/student/Report.jsx'
 import StudentReview from './pages/student/Review.jsx'
@@ -46,6 +47,14 @@ export default function App() {
         element={
           <RequireAuth roles={['teacher', 'admin']}>
             <TeacherExams />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/teacher/knowledge"
+        element={
+          <RequireAuth roles={['teacher', 'admin']}>
+            <Knowledge />
           </RequireAuth>
         }
       />

@@ -108,14 +108,15 @@ def point_to_dict(session: Session, point: KnowledgePoint) -> dict:
     }
 
 
-def create_point(
+def _create_point(
     session: Session,
     *,
     name: str,
     parent_id: int | None,
     aliases: list[str] | None,
-    user: User,
-) -> dict:
+    created_by: str,
+) -> KnowledgePoint:
+    """建节点但不提交，供接口与迁移复用。"""
     cleaned_name = _clean_name(name)
     if parent_id is not None:
         parent = _get(session, parent_id)
@@ -127,7 +128,7 @@ def create_point(
     point = KnowledgePoint(
         name=cleaned_name,
         parent_id=parent_id,
-        created_by=user.username,
+        created_by=created_by,
         created_at=utcnow(),
         updated_at=utcnow(),
     )
@@ -135,6 +136,25 @@ def create_point(
     session.flush()
     for alias in cleaned_aliases:
         session.add(KnowledgePointAlias(knowledge_point_id=point.id, alias=alias))
+    session.flush()
+    return point
+
+
+def create_point(
+    session: Session,
+    *,
+    name: str,
+    parent_id: int | None,
+    aliases: list[str] | None,
+    user: User,
+) -> dict:
+    point = _create_point(
+        session,
+        name=name,
+        parent_id=parent_id,
+        aliases=aliases,
+        created_by=user.username,
+    )
     _commit_or_conflict(session)
     session.refresh(point)
     return point_to_dict(session, point)
@@ -258,10 +278,10 @@ def set_question_points(
     return [{"id": point.id, "name": point.name} for point in points]
 
 
-def merge_points(session: Session, source_id: int, target_id: int) -> dict:
-    source = _get(session, source_id)
-    target = _get(session, target_id)
-
+def _merge_points(
+    session: Session, source: KnowledgePoint, target: KnowledgePoint
+) -> None:
+    """把 source 并进 target 但不提交，供接口与迁移复用。"""
     if source.id == target.id:
         raise KnowledgeError("不能把知识点合并到自己")
     if target.parent_id == source.id:
@@ -318,6 +338,13 @@ def merge_points(session: Session, source_id: int, target_id: int) -> dict:
         )
 
     session.delete(source)
+    session.flush()
+
+
+def merge_points(session: Session, source_id: int, target_id: int) -> dict:
+    source = _get(session, source_id)
+    target = _get(session, target_id)
+    _merge_points(session, source, target)
     _commit_or_conflict(session)
     session.refresh(target)
     return point_to_dict(session, target)
