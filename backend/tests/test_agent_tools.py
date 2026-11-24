@@ -231,7 +231,8 @@ def test_sse_tool_event_before_text_and_no_args(client, people):
     tool_events = [event for event in events if event["event"] == "tool"]
     assert len(tool_events) == 1
     text_events = [event for event in events if event["event"] == "text"]
-    assert len(text_events) >= 2
+    # 句级缓冲后，同一句里的多个模型分片会合并成一个 text。
+    assert text_events
     text = "".join(json.loads(event["data"])["delta"] for event in text_events)
     assert text == TOOL_FINAL_ANSWER
     assert events[-1]["event"] == "end"

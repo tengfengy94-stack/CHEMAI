@@ -210,6 +210,42 @@ def test_difficulty_different_student_isolated(db, students):
         assert practice.current_difficulty(session, students["s2"]) == 2
 
 
+# ---- 连续答错计数 ----
+
+
+def test_consecutive_wrong_empty_is_zero(db, students):
+    with db() as session:
+        assert practice.consecutive_wrong_count(session, students["s1"]) == 0
+
+
+def test_consecutive_wrong_counts_tail(db, students):
+    qid = make_question_row(db, stem="一")
+    for _ in range(3):
+        add_record(db, students["s1"], qid, False)
+    with db() as session:
+        assert practice.consecutive_wrong_count(session, students["s1"]) == 3
+
+
+def test_consecutive_wrong_stops_at_correct(db, students):
+    qid = make_question_row(db, stem="一")
+    add_record(db, students["s1"], qid, False)
+    add_record(db, students["s1"], qid, False)
+    add_record(db, students["s1"], qid, True)
+    add_record(db, students["s1"], qid, False)
+    with db() as session:
+        assert practice.consecutive_wrong_count(session, students["s1"]) == 1
+
+
+def test_consecutive_wrong_isolated_by_student(db, students):
+    qid = make_question_row(db, stem="一")
+    add_record(db, students["s1"], qid, False)
+    add_record(db, students["s2"], qid, False)
+    add_record(db, students["s2"], qid, False)
+    with db() as session:
+        assert practice.consecutive_wrong_count(session, students["s1"]) == 1
+        assert practice.consecutive_wrong_count(session, students["s2"]) == 2
+
+
 # ---- 排除窗口 ----
 
 

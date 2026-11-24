@@ -10,12 +10,14 @@ from contextlib import aclosing, suppress
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
-from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage
+from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage, SystemMessage
 from pydantic import BaseModel
 from sqlalchemy import select
 
-from app.agent import ChatModel, build_messages, chunk_text
-from app.agent_context import ChatContext
+from app import practice
+from app.agent import ChatModel, chunk_text
+from app.agent_context import ChatContext, build_system_prompt
+from app.agent_guard import OutputGuard
 from app.agent_runtime import RECURSION_LIMIT, thread_id_for, tool_label
 from app.auth import AccessDeniedError, get_current_user, require_own_class
 from app.config import ModelConfigError
@@ -55,9 +57,10 @@ async def _pump(stream, queue: asyncio.Queue) -> None:
         await queue.put(("error", exc))
 
 
-async def stream_events(model: ChatModel, messages, username: str):
+async def stream_events(model: ChatModel, messages, username: str, context: ChatContext):
     """fallback 单轮路径：模型增量与 15 秒超时赛跑；超时就发 SSE 注释心跳。"""
     queue: asyncio.Queue = asyncio.Queue()
+    guard = OutputGuard(context)
     pump = asyncio.create_task(_pump(model.astream(messages), queue))
     try:
         while True:
@@ -69,12 +72,20 @@ async def stream_events(model: ChatModel, messages, username: str):
             if kind == "chunk":
                 text = chunk_text(payload)
                 if text:
-                    yield sse_event("text", {"delta": text})
+                    for piece in guard.feed(text):
+                        yield sse_event("text", {"delta": piece})
             elif kind == "done":
+                for piece in guard.flush():
+                    yield sse_event("text", {"delta": piece})
                 yield sse_event("end", {})
                 return
             else:
                 logger.error("对话流中断（用户 %s）：%s", username, payload, exc_info=payload)
+                if not guard.tripped:
+                    for piece in guard.flush():
+                        yield sse_event("text", {"delta": piece})
+                if guard.tripped:
+                    yield sse_event("end", {})
                 return
     finally:
         pump.cancel()
@@ -143,8 +154,7 @@ async def _rewind_failed_turn(agent, config, message: str) -> None:
     只有最后一条用户消息与本次重试内容一致才回退；请求根本没到服务端时，
     最后一条是更早的提问，内容不一致，直接追加本次消息即可。
     """
-    state = await agent.aget_state(config)
-    messages = (state.values or {}).get("messages", []) if state else []
+    messages = await _thread_messages(agent, config)
     index = next(
         (i for i in range(len(messages) - 1, -1, -1) if isinstance(messages[i], HumanMessage)),
         None,
@@ -160,14 +170,64 @@ async def _rewind_failed_turn(agent, config, message: str) -> None:
         await agent.aupdate_state(config, {"messages": removals})
 
 
+async def _thread_messages(agent, config) -> list:
+    """当前线程的全部消息；历史、收尾与清洗共用同一条读取口径。"""
+    state = await agent.aget_state(config)
+    return (state.values or {}).get("messages", []) if state else []
+
+
 async def _last_ai_text(agent, config) -> str:
     """取图结束时最后一条 AI 正文；用于补发没有经过模型流的收尾消息。"""
-    state = await agent.aget_state(config)
-    messages = (state.values or {}).get("messages", []) if state else []
+    messages = await _thread_messages(agent, config)
     for item in reversed(messages):
         if isinstance(item, AIMessage):
             return item.content if isinstance(item.content, str) else ""
     return ""
+
+
+async def _message_ids(agent, config) -> set[str]:
+    """当前线程已有的消息 ID，用来区分本轮新增的 AI 消息。"""
+    messages = await _thread_messages(agent, config)
+    return {item.id for item in messages if getattr(item, "id", None)}
+
+
+async def _sanitize_tripped_turn(
+    agent, config, existing_ids: set[str] | None, safe_text: str, username: str
+) -> None:
+    """命中红线后清洗本轮 AI 正文，避免历史与下一轮上下文再读到违规内容。"""
+    try:
+        messages = await _thread_messages(agent, config)
+        if existing_ids is None:
+            # 起始快照失败时只处理最后一条，避免误伤更早的历史回答。
+            new_ai = [
+                item
+                for item in messages
+                if isinstance(item, AIMessage) and getattr(item, "id", None)
+            ][-1:]
+        else:
+            new_ai = [
+                item
+                for item in messages
+                if isinstance(item, AIMessage)
+                and getattr(item, "id", None)
+                and item.id not in existing_ids
+            ]
+        if not new_ai:
+            return
+        last = new_ai[-1]
+        updates = []
+        for item in new_ai:
+            content = item.content if isinstance(item.content, str) else ""
+            if not content:
+                continue
+            if item is last and not item.tool_calls:
+                updates.append(item.model_copy(update={"content": safe_text}))
+            else:
+                updates.append(item.model_copy(update={"content": ""}))
+        if updates:
+            await agent.aupdate_state(config, {"messages": updates})
+    except Exception:  # noqa: BLE001 - 清洗失败不阻塞当前对话
+        logger.exception("清洗红线命中后的回答失败（用户 %s）", username)
 
 
 async def _stream_agent_events(
@@ -190,6 +250,13 @@ async def _stream_agent_events(
         except Exception:  # noqa: BLE001 - 回退失败仍继续本轮，最多留下一条旧消息
             logger.exception("重试回退失败（用户 %s）", username)
 
+    guard = OutputGuard(context)
+    try:
+        existing_ids = await _message_ids(agent, config)
+    except Exception:  # noqa: BLE001 - 起始快照失败时不清洗旧消息
+        existing_ids = None
+        logger.exception("读取本轮起始消息失败（用户 %s）", username)
+
     pump = asyncio.create_task(
         _pump_agent(
             agent,
@@ -199,7 +266,8 @@ async def _stream_agent_events(
             queue,
         )
     )
-    streamed_text = ""
+    raw_text = ""
+    emitted_text = ""
     try:
         while True:
             try:
@@ -208,6 +276,8 @@ async def _stream_agent_events(
                 yield ": ping\n\n"
                 continue
             if kind == "event":
+                if guard.tripped:
+                    continue
                 event = payload
                 event_name = event.get("event")
                 metadata = event.get("metadata") or {}
@@ -227,8 +297,10 @@ async def _stream_agent_events(
                     chunk = (event.get("data") or {}).get("chunk")
                     text = chunk_text(chunk)
                     if text:
-                        streamed_text += text
-                        yield sse_event("text", {"delta": text})
+                        raw_text += text
+                        for piece in guard.feed(text):
+                            emitted_text += piece
+                            yield sse_event("text", {"delta": piece})
             elif kind == "done":
                 # 模型调用上限/收尾消息不是模型流，不会触发 on_chat_model_stream，
                 # 这里从最终状态补发最后一条 AI 正文，避免客户端只看到 end。
@@ -237,12 +309,32 @@ async def _stream_agent_events(
                 except Exception:  # noqa: BLE001
                     logger.exception("读取收尾回答失败（用户 %s）", username)
                     final_text = ""
-                if final_text and not streamed_text.endswith(final_text):
-                    yield sse_event("text", {"delta": final_text})
+                if final_text and not raw_text.endswith(final_text):
+                    for piece in guard.feed(final_text):
+                        emitted_text += piece
+                        yield sse_event("text", {"delta": piece})
+                for piece in guard.flush():
+                    emitted_text += piece
+                    yield sse_event("text", {"delta": piece})
+                if guard.tripped:
+                    await _sanitize_tripped_turn(
+                        agent, config, existing_ids, emitted_text, username
+                    )
                 yield sse_event("end", {})
                 return
             else:
                 logger.error("对话流中断（用户 %s）：%s", username, payload, exc_info=payload)
+                # 断流前把已生成的安全残句发出去；命中红线则发替代话术。
+                if not guard.tripped:
+                    for piece in guard.flush():
+                        emitted_text += piece
+                        yield sse_event("text", {"delta": piece})
+                if guard.tripped:
+                    # 已经有一条完整的替代回答，补发 end，避免客户端进入重试态。
+                    await _sanitize_tripped_turn(
+                        agent, config, existing_ids, emitted_text, username
+                    )
+                    yield sse_event("end", {})
                 return
     finally:
         pump.cancel()
@@ -284,25 +376,76 @@ def _teacher_class(app, user: User, requested: int | None):
         return requested, None
 
 
-def _exam_in_progress(session_factory, student_id: int) -> bool:
-    with session_factory() as session:
-        found = session.scalar(
-            select(AnswerRecord.id)
-            .where(
-                AnswerRecord.student_id == student_id,
-                AnswerRecord.status == "in_progress",
-            )
-            .limit(1)
+def _exam_in_progress(session, student_id: int) -> bool:
+    found = session.scalar(
+        select(AnswerRecord.id)
+        .where(
+            AnswerRecord.student_id == student_id,
+            AnswerRecord.status == "in_progress",
         )
-        return found is not None
+        .limit(1)
+    )
+    return found is not None
+
+
+def _dedupe_names(names) -> tuple[str, ...]:
+    return tuple(dict.fromkeys(name for name in names if name))
+
+
+def _name_scope(
+    session, user: User, class_id: int | None
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """输出检查用的姓名范围：当前身份能看到的，以及不能看到的。"""
+    if user.role == "student":
+        visible = _dedupe_names((user.name, user.username))
+        if user.class_id is None:
+            return visible, ()
+        rows = session.execute(
+            select(User.name, User.username).where(
+                User.role == "student",
+                User.class_id == user.class_id,
+                User.id != user.id,
+            )
+        ).all()
+        forbidden = _dedupe_names(
+            name for row in rows for name in (row.name, row.username)
+        )
+        return visible, forbidden
+
+    if user.role == "teacher" and class_id is not None:
+        rows = session.execute(
+            select(User.name, User.username, User.class_id).where(
+                User.role == "student"
+            )
+        ).all()
+        visible = _dedupe_names(
+            name
+            for row in rows
+            if row.class_id == class_id
+            for name in (row.name, row.username)
+        )
+        forbidden = _dedupe_names(
+            name
+            for row in rows
+            if row.class_id != class_id
+            for name in (row.name, row.username)
+        )
+        return visible, forbidden
+
+    return (), ()
 
 
 def _build_context(app, user: User, scene: str, class_id: int | None) -> ChatContext:
-    exam_in_progress = (
-        _exam_in_progress(app.state.session_factory, user.id)
-        if user.role == "student"
-        else False
-    )
+    with app.state.session_factory() as session:
+        exam_in_progress = (
+            _exam_in_progress(session, user.id) if user.role == "student" else False
+        )
+        consecutive_wrong = (
+            practice.consecutive_wrong_count(session, user.id)
+            if user.role == "student"
+            else 0
+        )
+        visible_names, forbidden_names = _name_scope(session, user, class_id)
     return ChatContext(
         user_id=user.id,
         role=user.role,
@@ -310,6 +453,9 @@ def _build_context(app, user: User, scene: str, class_id: int | None) -> ChatCon
         scene=scene,
         exam_in_progress=exam_in_progress,
         session_factory=app.state.session_factory,
+        consecutive_wrong=consecutive_wrong,
+        visible_names=visible_names,
+        forbidden_names=forbidden_names,
     )
 
 
@@ -364,8 +510,13 @@ async def chat_stream(
         return fail("助教暂时不可用，请稍后重试", 500)
 
     username = user.username
+    context = _build_context(app, user, payload.scene, class_id)
+    messages = [
+        SystemMessage(content=build_system_prompt(context)),
+        HumanMessage(content=message),
+    ]
     return StreamingResponse(
-        stream_events(model, build_messages(message), username),
+        stream_events(model, messages, username, context),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache, no-transform",
@@ -399,8 +550,9 @@ async def chat_history(
 
     thread_id = thread_id_for(user, class_id)
     agent = agents.get(user.role) or agents["admin"]
-    state = await agent.aget_state({"configurable": {"thread_id": thread_id}})
-    messages = (state.values or {}).get("messages", []) if state else []
+    messages = await _thread_messages(
+        agent, {"configurable": {"thread_id": thread_id}}
+    )
     items = []
     for message in messages:
         if isinstance(message, HumanMessage):

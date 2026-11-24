@@ -16,6 +16,9 @@ class ChatContext:
     scene: str
     exam_in_progress: bool
     session_factory: Callable[[], Session]
+    consecutive_wrong: int = 0
+    visible_names: tuple[str, ...] = ()
+    forbidden_names: tuple[str, ...] = ()
 
     @property
     def is_student(self) -> bool:
@@ -43,8 +46,19 @@ SCENE_PROMPTS = {
     "chat": (
         "现在是普通对话场景。按讲解型口径回答，先给结论或思路，"
         "再给下一步建议；不要主动布置任务。"
+        "如果学生问某道题为什么错，先调用讲错题工具，"
+        "按错因、正确思路、同类题三段回答。"
     ),
 }
+
+ENCOURAGEMENT_THRESHOLD = 3
+
+ENCOURAGEMENT_PROMPT = (
+    "这个学生最近连续答错了 {count} 次。先接住情绪，不评判、不说教，"
+    "也不要反复强调错了几次；给一个很小、更简单的下一步。"
+    "如果学生要练题，建议从更基础的题开始。"
+    "仍然遵守上面场景的全部规则，尤其是练习场景不直接给答案。"
+)
 
 TEACHER_PROMPT = (
     "当前用户是老师。老师问的是班级层面的事，按讲解型的严谨口径回答，"
@@ -63,7 +77,8 @@ RED_LINES = (
     "并说明考完可以一起看。\n"
     "2. 不泄露其他学生的成绩与信息；只使用工具返回的当前身份可见数据。\n"
     "3. 不提供危险实验操作建议；拒绝并给出安全做法。\n"
-    "4. 不使用羞辱、贬低性表达。"
+    "4. 不使用羞辱、贬低性表达；学生用侮辱性的话时，不跟着对骂，"
+    "平静说明并继续当前的事。"
 )
 
 OUTPUT_RULES = (
@@ -85,6 +100,11 @@ def build_system_prompt(context: ChatContext) -> str:
             f"{SCENE_PROMPTS.get(context.scene, SCENE_PROMPTS['chat'])}\n"
             f"{STUDENT_SCOPE}"
         )
+        if context.consecutive_wrong >= ENCOURAGEMENT_THRESHOLD:
+            scene = (
+                f"{scene}\n"
+                f"{ENCOURAGEMENT_PROMPT.format(count=context.consecutive_wrong)}"
+            )
     else:
         scene = SCENE_PROMPTS.get(context.scene, SCENE_PROMPTS["chat"])
     parts = [IDENTITY, scene, RED_LINES, OUTPUT_RULES]

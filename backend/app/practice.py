@@ -59,6 +59,21 @@ def current_difficulty(session: Session, student_id: int) -> int:
     return level
 
 
+def consecutive_wrong_count(session: Session, student_id: int) -> int:
+    """从练习记录尾部数连续答错，答对一条即停止；空记录为 0。"""
+    results = session.scalars(
+        select(PracticeRecord.is_correct)
+        .where(PracticeRecord.student_id == student_id)
+        .order_by(PracticeRecord.id.desc())
+    )
+    count = 0
+    for is_correct in results:
+        if is_correct:
+            break
+        count += 1
+    return count
+
+
 def recent_question_ids(session: Session, student_id: int, limit: int = EXCLUDE_WINDOW) -> list[int]:
     """最近 limit 条练习记录里的题目 ID，按记录倒序；重复题保留重复。"""
     return list(

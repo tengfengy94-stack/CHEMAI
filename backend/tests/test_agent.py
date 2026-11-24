@@ -108,6 +108,20 @@ def test_chunk_text_reads_plain_and_block_content():
     assert agent.chunk_text(blocks) == "分块"
 
 
+def test_fake_model_guard_triggers_return_violations():
+    model = agent.FakeChatModel()
+
+    for trigger, expected in agent.GUARD_ANSWERS.items():
+        message = model._next_message([HumanMessage(content=trigger)])
+        assert message.content == expected
+
+
+def test_fake_model_normal_message_still_uses_fixed_answer():
+    message = agent.FakeChatModel()._next_message([HumanMessage(content="你好")])
+
+    assert message.content == agent.FAKE_ANSWER
+
+
 def test_langchain_streaming_yields_text_in_order():
     """按已安装的 langchain-core 1.8.4 的 astream 接口验证增量顺序，不访问网络。"""
     model = GenericFakeChatModel(messages=iter([AIMessage(content="第一段 第二段")]))
