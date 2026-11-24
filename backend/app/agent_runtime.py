@@ -1,6 +1,7 @@
 """Agent 图装配：按角色裁剪工具，接场景提示、摘要压缩与 8 次调用上限。"""
 import json
 import logging
+import re
 from typing import Any
 
 from langchain.agents import create_agent
@@ -209,13 +210,37 @@ def build_agents(model, checkpointer: BaseCheckpointSaver):
     }
 
 
-def thread_id_for(user: User, class_id: int | None = None) -> str:
-    """线程只由服务端身份推导；老师按账号 + 班级分线。"""
+_CONVERSATION_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+
+
+def normalize_conversation_id(value: str | None) -> str | None:
+    """评测模式下的隔离后缀；只接受小写字母、数字、下划线与短横线。"""
+    if value is None:
+        return None
+    cleaned = value.strip()
+    if not _CONVERSATION_ID_RE.fullmatch(cleaned):
+        return None
+    return cleaned
+
+
+def thread_id_for(
+    user: User,
+    class_id: int | None = None,
+    eval_suffix: str | None = None,
+) -> str:
+    """线程只由服务端身份推导；老师按账号 + 班级分线。
+
+    评测模式在身份之后追加隔离后缀，客户端无法越过当前身份。
+    """
     if user.role == "teacher":
-        return f"teacher:{user.id}:class:{class_id or 0}"
-    if user.role == "admin":
-        return f"admin:{user.id}"
-    return f"student:{user.id}"
+        base = f"teacher:{user.id}:class:{class_id or 0}"
+    elif user.role == "admin":
+        base = f"admin:{user.id}"
+    else:
+        base = f"student:{user.id}"
+    if eval_suffix:
+        base = f"{base}:eval:{eval_suffix}"
+    return base
 
 
 def tool_label(name: str) -> str:

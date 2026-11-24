@@ -40,6 +40,11 @@ def fake_model_enabled() -> bool:
     return _env("CHEMAI_FAKE_MODEL").lower() in {"1", "true", "yes", "on"}
 
 
+def eval_mode() -> bool:
+    """评测模式开关：只在评测脚本启动的服务里打开，生产默认关闭。"""
+    return _env("CHEMAI_EVAL_MODE").lower() in {"1", "true", "yes", "on"}
+
+
 def should_use_fake_model() -> bool:
     """显式开关优先；没有真模型密钥时自动回退到假模型。"""
     return fake_model_enabled() or not _env("CHEMAI_MODEL_API_KEY")

@@ -18,7 +18,12 @@ from app import practice
 from app.agent import ChatModel, chunk_text
 from app.agent_context import ChatContext, build_system_prompt
 from app.agent_guard import OutputGuard
-from app.agent_runtime import RECURSION_LIMIT, thread_id_for, tool_label
+from app.agent_runtime import (
+    RECURSION_LIMIT,
+    normalize_conversation_id,
+    thread_id_for,
+    tool_label,
+)
 from app.auth import AccessDeniedError, get_current_user, require_own_class
 from app.config import ModelConfigError
 from app.envelope import fail, ok
@@ -37,6 +42,8 @@ class ChatRequest(BaseModel):
     scene: str = "chat"
     class_id: int | None = None
     retry: bool = False
+    # 只在评测模式生效：拼在身份之后的隔离后缀。
+    conversation_id: str | None = None
 
 
 def sse_event(event: str, data: dict) -> str:
@@ -237,6 +244,7 @@ async def _stream_agent_events(
     context: ChatContext,
     username: str,
     retry: bool = False,
+    trace=None,
 ):
     """LangGraph 路径：tool 提示 + text 正文 + end；心跳与中断规则同第 11 章。"""
     queue: asyncio.Queue = asyncio.Queue()
@@ -276,11 +284,32 @@ async def _stream_agent_events(
                 yield ": ping\n\n"
                 continue
             if kind == "event":
-                if guard.tripped:
-                    continue
                 event = payload
                 event_name = event.get("event")
                 metadata = event.get("metadata") or {}
+                if trace is not None:
+                    if event_name == "on_tool_start":
+                        trace.start(
+                            thread_id,
+                            str(event.get("run_id") or ""),
+                            event.get("name") or "",
+                            (event.get("data") or {}).get("input"),
+                        )
+                    elif event_name == "on_tool_end":
+                        output = (event.get("data") or {}).get("output")
+                        result = _tool_payload(event)
+                        if not result:
+                            content = getattr(output, "content", None)
+                            if isinstance(content, str) and content:
+                                result = {"raw": content[:2000]}
+                        trace.end(
+                            thread_id,
+                            str(event.get("run_id") or ""),
+                            result,
+                            getattr(output, "status", None) != "error",
+                        )
+                if guard.tripped:
+                    continue
                 if event_name == "on_tool_start":
                     name = event.get("name") or ""
                     yield sse_event(
@@ -342,10 +371,12 @@ async def _stream_agent_events(
             await pump
 
 
-async def stream_agent_events(agent, message, thread_id, context, username, lock, retry=False):
+async def stream_agent_events(
+    agent, message, thread_id, context, username, lock, retry=False, trace=None
+):
     async with lock:
         async for chunk in _stream_agent_events(
-            agent, message, thread_id, context, username, retry
+            agent, message, thread_id, context, username, retry, trace
         ):
             yield chunk
 
@@ -356,6 +387,13 @@ def _thread_lock(app, thread_id: str) -> asyncio.Lock:
         locks = {}
         app.state.thread_locks = locks
     return locks.setdefault(thread_id, asyncio.Lock())
+
+
+def _eval_suffix(app, conversation_id: str | None) -> str | None:
+    """评测模式才接受隔离后缀；生产模式一律忽略。"""
+    if not getattr(app.state, "eval_mode", False):
+        return None
+    return normalize_conversation_id(conversation_id)
 
 
 def _teacher_class(app, user: User, requested: int | None):
@@ -374,6 +412,19 @@ def _teacher_class(app, user: User, requested: int | None):
         except AccessDeniedError:
             return None, fail("只能选择自己带的班", 403)
         return requested, None
+
+
+def resolve_class_scope(app, user: User, requested: int | None):
+    """按身份校验班级参数，返回 (class_id, error)；对话与评测轨迹共用。"""
+    if user.role == "student":
+        if requested is not None:
+            return None, fail("学生不能指定班级", 422)
+        return None, None
+    if user.role == "teacher":
+        return _teacher_class(app, user, requested)
+    if requested is not None:
+        return None, fail("当前身份不能指定班级", 422)
+    return None, None
 
 
 def _exam_in_progress(session, student_id: int) -> bool:
@@ -472,29 +523,32 @@ async def chat_stream(
         return fail("场景不合法", 422)
 
     app = request.app
-    class_id = payload.class_id
-    if user.role == "student":
-        if class_id is not None:
-            return fail("学生不能指定班级", 422)
-    elif user.role == "teacher":
-        class_id, error = _teacher_class(app, user, class_id)
-        if error is not None:
-            return error
-    else:
-        if class_id is not None:
-            return fail("当前身份不能指定班级", 422)
-        class_id = None
+    class_id, error = resolve_class_scope(app, user, payload.class_id)
+    if error is not None:
+        return error
 
     agents = getattr(app.state, "agents", None)
     if agents and getattr(app.state, "use_agent_graph", True):
         agent = agents.get(user.role) or agents["admin"]
         context = _build_context(app, user, payload.scene, class_id)
-        thread_id = thread_id_for(user, class_id)
+        thread_id = thread_id_for(
+            user, class_id, _eval_suffix(app, payload.conversation_id)
+        )
         username = user.username
         lock = _thread_lock(app, thread_id)
+        trace = getattr(app.state, "eval_trace", None)
+        if trace is not None:
+            trace.touch(thread_id)
         return StreamingResponse(
             stream_agent_events(
-                agent, message, thread_id, context, username, lock, retry=payload.retry
+                agent,
+                message,
+                thread_id,
+                context,
+                username,
+                lock,
+                retry=payload.retry,
+                trace=trace,
             ),
             media_type="text/event-stream",
             headers={
@@ -529,6 +583,7 @@ async def chat_stream(
 async def chat_history(
     request: Request,
     class_id: int | None = None,
+    conversation_id: str | None = None,
     user: User = Depends(get_current_user),
 ):
     app = request.app
@@ -536,19 +591,13 @@ async def chat_history(
     if not agents:
         return ok({"items": []})
 
-    if user.role == "student":
-        if class_id is not None:
-            return fail("学生不能指定班级", 422)
-    elif user.role == "teacher":
-        class_id, error = _teacher_class(app, user, class_id)
-        if error is not None:
-            return error
-    else:
-        if class_id is not None:
-            return fail("当前身份不能指定班级", 422)
-        class_id = None
+    class_id, error = resolve_class_scope(app, user, class_id)
+    if error is not None:
+        return error
 
-    thread_id = thread_id_for(user, class_id)
+    thread_id = thread_id_for(
+        user, class_id, _eval_suffix(app, conversation_id)
+    )
     agent = agents.get(user.role) or agents["admin"]
     messages = await _thread_messages(
         agent, {"configurable": {"thread_id": thread_id}}

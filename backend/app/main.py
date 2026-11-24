@@ -23,6 +23,8 @@ from app.class_reporting import ClassExamNotFound
 from app.config import ModelConfigError
 from app.db import make_engine, make_session_factory
 from app.envelope import fail
+from app.eval_routes import router as eval_router
+from app.eval_trace import EvalTraceStore
 from app.knowledge import KnowledgePointNotFound
 from app.knowledge_routes import router as knowledge_router
 from app.practice_routes import router as practice_router
@@ -50,11 +52,16 @@ def _checkpoint_path(database_url: str) -> str | None:
     return None
 
 
-def create_app(database_url: str | None = None, seed: bool = True) -> FastAPI:
+def create_app(
+    database_url: str | None = None,
+    seed: bool = True,
+    eval_mode: bool | None = None,
+) -> FastAPI:
     url = database_url or config.database_url()
     engine = make_engine(url)
     session_factory = make_session_factory(engine)
     checkpoint_path = _checkpoint_path(url)
+    eval_enabled = config.eval_mode() if eval_mode is None else eval_mode
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -86,6 +93,8 @@ def create_app(database_url: str | None = None, seed: bool = True) -> FastAPI:
 
     app = FastAPI(title="ChemAI", lifespan=lifespan)
     app.state.session_factory = session_factory
+    app.state.eval_mode = eval_enabled
+    app.state.eval_trace = EvalTraceStore() if eval_enabled else None
     # 测试可以换成返回失败/记录型模型的工厂
     app.state.chat_model_factory = build_chat_model
 
@@ -170,6 +179,8 @@ def create_app(database_url: str | None = None, seed: bool = True) -> FastAPI:
     app.include_router(reporting_router)
     app.include_router(practice_router)
     app.include_router(agent_router)
+    if eval_enabled:
+        app.include_router(eval_router)
     return app
 
 

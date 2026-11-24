@@ -63,3 +63,20 @@ def test_key_without_address_or_model_reports_incomplete(clean_model_env):
     message = str(exc.value)
     assert "CHEMAI_MODEL_BASE_URL" in message
     assert "CHEMAI_MODEL_NAME" in message
+
+
+def test_eval_mode_off_by_default(clean_model_env):
+    clean_model_env.delenv("CHEMAI_EVAL_MODE", raising=False)
+    assert config.eval_mode() is False
+
+
+@pytest.mark.parametrize("value", ["1", "true", "TRUE", "yes", "on", " On "])
+def test_eval_mode_truthy_values(clean_model_env, value):
+    clean_model_env.setenv("CHEMAI_EVAL_MODE", value)
+    assert config.eval_mode() is True
+
+
+@pytest.mark.parametrize("value", ["", "0", "false", "no", "off", "2"])
+def test_eval_mode_falsy_values(clean_model_env, value):
+    clean_model_env.setenv("CHEMAI_EVAL_MODE", value)
+    assert config.eval_mode() is False
