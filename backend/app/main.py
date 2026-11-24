@@ -4,17 +4,23 @@ create_app 接受数据库地址，测试用它换成临时库；开发时用项
 表结构只由 Alembic 迁移建，这里不 create_all。
 """
 from contextlib import asynccontextmanager
+import logging
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+from sqlalchemy.engine import make_url
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app import config, review  # review 导入即注册判分事件订阅
 from app.agent import build_chat_model
 from app.agent_routes import router as agent_router
+from app.agent_runtime import build_agents
 from app.auth import AccessDeniedError, AuthRequiredError
 from app.class_reporting import ClassExamNotFound
+from app.config import ModelConfigError
 from app.db import make_engine, make_session_factory
 from app.envelope import fail
 from app.knowledge import KnowledgePointNotFound
@@ -33,17 +39,49 @@ from app.routes import (
 from app.schemas import FIELD_LABELS
 from app.seed import seed_if_empty
 
+logger = logging.getLogger("chemai")
+
+
+def _checkpoint_path(database_url: str) -> str | None:
+    """SQLite 文件库返回路径；内存库交给 InMemorySaver。"""
+    url = make_url(database_url)
+    if url.drivername.startswith("sqlite") and url.database and url.database != ":memory:":
+        return url.database
+    return None
+
 
 def create_app(database_url: str | None = None, seed: bool = True) -> FastAPI:
-    engine = make_engine(database_url or config.database_url())
+    url = database_url or config.database_url()
+    engine = make_engine(url)
     session_factory = make_session_factory(engine)
+    checkpoint_path = _checkpoint_path(url)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         if seed:
             with session_factory() as session:
                 seed_if_empty(session)
-        yield
+
+        app.state.agents = None
+        app.state.use_agent_graph = True
+        app.state.agent_error = None
+        try:
+            model = build_chat_model()
+        except ModelConfigError as exc:
+            # 配置不完整时保留第 11 章的每轮 500 信封行为，不让应用起不来。
+            app.state.agent_error = exc
+            logger.error("模型配置错误：%s", exc)
+            yield
+            engine.dispose()
+            return
+
+        if checkpoint_path:
+            async with AsyncSqliteSaver.from_conn_string(checkpoint_path) as saver:
+                app.state.agents = build_agents(model, saver)
+                yield
+        else:
+            app.state.agents = build_agents(model, InMemorySaver())
+            yield
         engine.dispose()
 
     app = FastAPI(title="ChemAI", lifespan=lifespan)

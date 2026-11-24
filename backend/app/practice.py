@@ -162,6 +162,43 @@ def _empty_result(
     }
 
 
+def pick_questions(session: Session, student_id: int, count: int = 5) -> list[dict]:
+    """按弱项排名与当前难度选一组题，供 Agent 布置练习；不写练习记录。"""
+    limit = max(1, min(int(count or 5), 20))
+    level = current_difficulty(session, student_id)
+    recent = set(recent_question_ids(session, student_id, EXCLUDE_WINDOW))
+    report = reporting.weak_report(session, student_id)
+
+    pools: list[dict[int, Question]] = []
+    if report["items"]:
+        for item in report["items"]:
+            pools.append(_approved_questions_for_point(session, item["knowledge_point_id"]))
+    pools.append(_all_approved_questions(session))
+
+    picked: list[Question] = []
+    seen: set[int] = set(recent)
+    for pool in pools:
+        candidates = sorted(
+            (question for question in pool.values() if question.id not in seen),
+            key=lambda question: (abs(question.difficulty - level), question.id),
+        )
+        for question in candidates:
+            if len(picked) >= limit:
+                return [_question_summary(question) for question in picked]
+            picked.append(question)
+            seen.add(question.id)
+    return [_question_summary(question) for question in picked]
+
+
+def _question_summary(question: Question) -> dict:
+    return {
+        "id": question.id,
+        "stem": question.stem,
+        "type": question.type,
+        "difficulty": question.difficulty,
+    }
+
+
 def next_question(session: Session, student_id: int) -> dict:
     """出一道理题：弱项按排名依次尝试；没有弱项时从全部已通过题里选。"""
     level = current_difficulty(session, student_id)

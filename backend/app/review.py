@@ -28,6 +28,14 @@ class ReviewConflict(Exception):
     """并发作答后到，路由转 400。"""
 
 
+class ReviewQuestionNotFound(Exception):
+    """手动加复习时题目不存在。"""
+
+
+class ReviewQuestionNotApproved(Exception):
+    """手动加复习时题目未通过审核。"""
+
+
 def enqueue_from_attempt(
     session: Session, record, graded_at: datetime | None = None
 ) -> None:
@@ -73,6 +81,48 @@ def enqueue_from_attempt(
 
 
 events.subscribe(events.ATTEMPT_GRADED, enqueue_from_attempt)
+
+
+def add_manual_task(session: Session, student_id: int, question_id: int) -> ReviewTask:
+    """当前学生手动把一道题加入复习：新任务 0 级明天到期；已有任务只提前到期日。"""
+    question = session.get(Question, question_id)
+    if question is None:
+        raise ReviewQuestionNotFound()
+    if question.status != "approved":
+        raise ReviewQuestionNotApproved()
+
+    moment = clock.utcnow()
+    tomorrow = clock.business_today(moment) + timedelta(days=1)
+    task = session.scalar(
+        select(ReviewTask).where(
+            ReviewTask.student_id == student_id,
+            ReviewTask.question_id == question_id,
+        )
+    )
+    if task is None:
+        task = ReviewTask(
+            student_id=student_id,
+            question_id=question_id,
+            level=0,
+            due_on=tomorrow,
+            review_count=0,
+            created_at=moment,
+            updated_at=moment,
+        )
+        session.add(task)
+        session.commit()
+        session.refresh(task)
+        return task
+
+    if task.level >= LEVEL_MAX:
+        task.level = 0
+        task.due_on = tomorrow
+    elif task.due_on is None or task.due_on > tomorrow:
+        task.due_on = tomorrow
+    task.updated_at = moment
+    session.commit()
+    session.refresh(task)
+    return task
 
 
 def get_task(session: Session, task_id: int) -> ReviewTask:

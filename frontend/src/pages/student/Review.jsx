@@ -436,6 +436,11 @@ export default function StudentReview() {
   return (
     <div style={{ padding: 24, maxWidth: 1000, margin: '0 auto' }}>
       <StudentHeader title="复习" />
+      <Flex justify="flex-end" style={{ marginBottom: 8 }}>
+        <Button onClick={() => navigate('/student/chat?scene=wrong')}>
+          问一句
+        </Button>
+      </Flex>
 
       {activeTask ? (
         renderAnswer()

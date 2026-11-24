@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useLocation, useNavigate } from 'react-router'
 import {
   Alert,
   App as AntApp,
@@ -14,7 +15,7 @@ import {
   Tag,
   Typography,
 } from 'antd'
-import { answerPracticeQuestion, getNextPracticeQuestion } from '../../api.js'
+import { answerPracticeQuestion, getNextPracticeQuestion, getPracticePlan } from '../../api.js'
 import { DIFFICULTIES, QUESTION_TYPES } from '../../constants.js'
 import { optionLetter } from '../../format.js'
 import StudentHeader from './StudentHeader.jsx'
@@ -46,23 +47,67 @@ function DifficultyIndicator({ current }) {
 }
 
 export default function StudentPractice() {
+  const navigate = useNavigate()
+  const location = useLocation()
   const { message: toast } = AntApp.useApp()
+  const planIds = useMemo(() => {
+    const raw = new URLSearchParams(location.search).get('plan')
+    if (!raw) return []
+    return raw
+      .split(',')
+      .map((value) => Number(value))
+      .filter((value) => Number.isInteger(value) && value > 0)
+      .slice(0, 20)
+  }, [location.search])
   const [data, setData] = useState(null)
   const [answer, setAnswer] = useState('')
   const [feedback, setFeedback] = useState(null)
   const [loading, setLoading] = useState(true)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState('')
+  const [plan, setPlan] = useState(null)
 
   const applyNext = useCallback((next) => {
     setData(next)
     setAnswer(next.question?.type === 'multiple' ? [] : '')
   }, [])
 
+  const applyPlanItem = useCallback(
+    (items, index) => {
+      const question = items[index]
+      applyNext({
+        status: 'question',
+        reason: null,
+        message: null,
+        has_weak_data: false,
+        current_difficulty: question.difficulty,
+        served_difficulty: question.difficulty,
+        question,
+        knowledge_point: null,
+      })
+    },
+    [applyNext],
+  )
+
   const loadNext = useCallback(async () => {
-    setLoading(true)
     setError('')
     setFeedback(null)
+    if (plan) {
+      const nextIndex = plan.index + 1
+      if (nextIndex < plan.items.length) {
+        setPlan({ ...plan, index: nextIndex })
+        applyPlanItem(plan.items, nextIndex)
+        return
+      }
+      setPlan(null)
+      setData({
+        status: 'empty',
+        reason: 'plan_done',
+        message: '这组题做完了',
+      })
+      return
+    }
+    setLoading(true)
     try {
       const next = await getNextPracticeQuestion()
       applyNext(next)
@@ -71,17 +116,31 @@ export default function StudentPractice() {
     } finally {
       setLoading(false)
     }
-  }, [applyNext])
+  }, [applyNext, applyPlanItem, plan])
 
   useEffect(() => {
     let cancelled = false
     async function load() {
+      setLoading(true)
       try {
-        const next = await getNextPracticeQuestion()
-        if (!cancelled) {
-          applyNext(next)
-          setError('')
+        if (planIds.length) {
+          const result = await getPracticePlan(planIds)
+          if (cancelled) return
+          if (!result.items?.length) {
+            setData({
+              status: 'empty',
+              reason: 'plan_empty',
+              message: '这组题暂时不可用',
+            })
+          } else {
+            setPlan({ items: result.items, index: 0 })
+            applyPlanItem(result.items, 0)
+          }
+        } else {
+          const next = await getNextPracticeQuestion()
+          if (!cancelled) applyNext(next)
         }
+        if (!cancelled) setError('')
       } catch (err) {
         if (!cancelled) setError(err.message)
       } finally {
@@ -92,7 +151,7 @@ export default function StudentPractice() {
     return () => {
       cancelled = true
     }
-  }, [applyNext])
+  }, [applyNext, applyPlanItem, planIds])
 
   const submit = async () => {
     if (!data?.question) return
@@ -256,6 +315,11 @@ export default function StudentPractice() {
   return (
     <div style={{ padding: 24, maxWidth: 900, margin: '0 auto' }}>
       <StudentHeader title="练习" />
+      <Flex justify="flex-end" style={{ marginBottom: 8 }}>
+        <Button onClick={() => navigate('/student/chat?scene=practice')}>
+          问一句
+        </Button>
+      </Flex>
       {!loading && !error && data && (
         <DifficultyIndicator current={currentDifficulty} />
       )}

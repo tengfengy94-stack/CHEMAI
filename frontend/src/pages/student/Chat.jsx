@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
-import { Alert, Button, Flex, Input, Space, Spin, Typography } from 'antd'
+import { Alert, Button, Flex, Input, Select, Space, Spin, Typography } from 'antd'
 import { useNavigate } from 'react-router'
-import { currentUser, logout, streamChat } from '../../api.js'
+import { currentUser, getChatHistory, logout, streamChat } from '../../api.js'
 import StudentHeader from './StudentHeader.jsx'
 
 function TeacherHeader() {
@@ -26,17 +26,31 @@ function TeacherHeader() {
   )
 }
 
+function sceneFromUrl() {
+  const scene = new URLSearchParams(window.location.search).get('scene')
+  return scene === 'practice' || scene === 'wrong' ? scene : 'chat'
+}
+
 export default function Chat() {
+  const navigate = useNavigate()
   const user = currentUser()
+  const isTeacher = user?.role === 'teacher'
+  const classes = Array.isArray(user?.classes) ? user.classes : []
+  const initialClassId = isTeacher && classes.length ? classes[0].id : null
+
+  const [classId, setClassId] = useState(initialClassId)
   const [messages, setMessages] = useState([])
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
   const [error, setError] = useState('')
+  const [practicePlan, setPracticePlan] = useState([])
+  const [historyLoading, setHistoryLoading] = useState(true)
   const listRef = useRef(null)
   const abortRef = useRef(null)
   const idRef = useRef(0)
   const mountedRef = useRef(true)
   const sendingRef = useRef(false)
+  const scene = sceneFromUrl()
 
   useEffect(() => {
     mountedRef.current = true
@@ -51,11 +65,51 @@ export default function Chat() {
     if (list) list.scrollTop = list.scrollHeight
   }, [messages])
 
-  const run = async (text, { appendUser = true } = {}) => {
+  useEffect(() => {
+    let cancelled = false
+    async function loadHistory() {
+      if (isTeacher && classes.length > 1 && classId == null) {
+        setHistoryLoading(false)
+        return
+      }
+      setHistoryLoading(true)
+      try {
+        const data = await getChatHistory(classId)
+        if (cancelled) return
+        setMessages(
+          (data.items || []).map((item) => ({
+            id: ++idRef.current,
+            role: item.role,
+            content: item.content,
+            status: 'done',
+          })),
+        )
+        setError('')
+      } catch (err) {
+        if (!cancelled) setError(err.message || '历史加载失败')
+      } finally {
+        if (!cancelled) setHistoryLoading(false)
+      }
+    }
+    loadHistory()
+    return () => {
+      cancelled = true
+    }
+    // classes.length/classId 是老师切换班级的依赖；学生只加载一次
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [classId, isTeacher, classes.length])
+
+  const run = async (text, { appendUser = true, retry = false } = {}) => {
     if (sendingRef.current) return
+    if (historyLoading) return
+    if (isTeacher && classes.length > 1 && classId == null) {
+      setError('请先选择班级')
+      return
+    }
     sendingRef.current = true
     setSending(true)
     setError('')
+    setPracticePlan([])
 
     const assistantId = ++idRef.current
     setMessages((prev) => [
@@ -71,8 +125,30 @@ export default function Chat() {
     try {
       await streamChat(text, {
         signal: controller.signal,
+        scene,
+        classId,
+        retry,
         onEvent: ({ event, data }) => {
-          if (event === 'text') {
+          if (event === 'tool') {
+            if (
+              (data?.name === 'assign_practice_result' ||
+                data?.name === 'similar_question_result') &&
+              Array.isArray(data.questions)
+            ) {
+              setPracticePlan(data.questions)
+              return
+            }
+            const hint = {
+              id: ++idRef.current,
+              role: 'tool',
+              content: data?.label || '正在查资料',
+            }
+            setMessages((prev) => {
+              const index = prev.findIndex((item) => item.id === assistantId)
+              if (index === -1) return [...prev, hint]
+              return [...prev.slice(0, index), hint, ...prev.slice(index)]
+            })
+          } else if (event === 'text') {
             const delta = data?.delta
             if (!delta) return
             setMessages((prev) =>
@@ -104,7 +180,7 @@ export default function Chat() {
 
   const send = () => {
     const text = input.trim()
-    if (!text || sendingRef.current) return
+    if (!text || sendingRef.current || historyLoading) return
     setInput('')
     run(text)
   }
@@ -113,13 +189,12 @@ export default function Chat() {
     if (sendingRef.current) return
     const lastUser = [...messages].reverse().find((item) => item.role === 'user')
     if (!lastUser) return
-    // 保留提问，清掉失败的回答，重新生成
     setMessages((prev) => {
       const index = prev.findIndex((item) => item.id === lastUser.id)
       return index === -1 ? prev : prev.slice(0, index + 1)
     })
     setError('')
-    run(lastUser.content, { appendUser: false })
+    run(lastUser.content, { appendUser: false, retry: true })
   }
 
   const onKeyDown = (event) => {
@@ -129,13 +204,34 @@ export default function Chat() {
     }
   }
 
-  // 出错且输入框为空时，主按钮从“发送”变成“重试”；开始输入新问题就回到“发送”。
   const primaryIsRetry =
     !input.trim() && Boolean(error) && messages.some((item) => item.role === 'user')
+  const needsClass = isTeacher && classes.length > 1
+  const sendDisabled =
+    sending ||
+    historyLoading ||
+    (needsClass && classId == null) ||
+    (!input.trim() && !primaryIsRetry)
 
   return (
     <div style={{ padding: 24, maxWidth: 900, margin: '0 auto' }}>
       {user?.role === 'student' ? <StudentHeader title="对话" /> : <TeacherHeader />}
+
+      {needsClass && (
+        <Flex gap={8} align="center" style={{ marginBottom: 12 }}>
+          <Typography.Text type="secondary">当前班级</Typography.Text>
+          <Select
+            value={classId ?? undefined}
+            placeholder="请选择班级"
+            style={{ minWidth: 180 }}
+            onChange={setClassId}
+            options={classes.map((item) => ({ value: item.id, label: item.name }))}
+          />
+          <Typography.Text type="secondary">
+            切换班级会加载该班自己的对话
+          </Typography.Text>
+        </Flex>
+      )}
 
       <div
         ref={listRef}
@@ -148,7 +244,11 @@ export default function Chat() {
           borderRadius: 8,
         }}
       >
-        {messages.length === 0 ? (
+        {historyLoading ? (
+          <Flex align="center" justify="center" style={{ height: '100%' }}>
+            <Spin />
+          </Flex>
+        ) : messages.length === 0 ? (
           <Flex
             vertical
             align="center"
@@ -165,6 +265,15 @@ export default function Chat() {
           </Flex>
         ) : (
           messages.map((item) => {
+            if (item.role === 'tool') {
+              return (
+                <Flex key={item.id} justify="flex-start" style={{ marginBottom: 8 }}>
+                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                    {item.content}
+                  </Typography.Text>
+                </Flex>
+              )
+            }
             const mine = item.role === 'user'
             return (
               <Flex
@@ -227,14 +336,24 @@ export default function Chat() {
         <Button
           type="primary"
           onClick={primaryIsRetry ? retry : send}
-          disabled={sending || (!input.trim() && !primaryIsRetry)}
+          disabled={sendDisabled}
           loading={sending}
         >
           {primaryIsRetry ? '重试' : '发送'}
         </Button>
       </Flex>
+      {practicePlan.length > 0 && (
+        <Flex justify="flex-end" style={{ marginTop: 8 }}>
+          <Button
+            type="primary"
+            onClick={() => navigate(`/student/practice?plan=${practicePlan.join(',')}`)}
+          >
+            {practicePlan.length === 1 ? '去练这道题' : `去练这 ${practicePlan.length} 道题`}
+          </Button>
+        </Flex>
+      )}
       <Typography.Text type="secondary" style={{ display: 'block', marginTop: 8 }}>
-        本轮对话不会保存，刷新页面后清空。
+        对话会按当前身份保存；刷新或重新打开后可以继续。
       </Typography.Text>
     </div>
   )

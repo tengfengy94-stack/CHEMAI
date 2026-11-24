@@ -108,6 +108,56 @@ def point_to_dict(session: Session, point: KnowledgePoint) -> dict:
     }
 
 
+def _match_score(query: str, word: str) -> int:
+    """名称/别名匹配打分：精确最高，包含次之；0 表示不匹配。"""
+    if not query or not word:
+        return 0
+    if word == query:
+        return 100
+    if query in word:
+        return 90 - min(len(word) - len(query), 20)
+    if word in query:
+        return 80 - min(len(query) - len(word), 20)
+    return 0
+
+
+def find_point(session: Session, query: str) -> dict | None:
+    """按名称与别名找最接近的一个知识点；匹配不到返回 None，不猜。"""
+    raw = (query or "").strip()
+    if not raw:
+        return None
+    lowered = raw.casefold()
+
+    aliases: dict[int, list[str]] = {}
+    for row in session.scalars(
+        select(KnowledgePointAlias).order_by(KnowledgePointAlias.id)
+    ).all():
+        aliases.setdefault(row.knowledge_point_id, []).append(row.alias)
+
+    best: tuple[int, int] | None = None
+    best_point: KnowledgePoint | None = None
+    for point in session.scalars(select(KnowledgePoint).order_by(KnowledgePoint.id)).all():
+        score = _match_score(lowered, point.name.casefold())
+        for alias in aliases.get(point.id, []):
+            score = max(score, _match_score(lowered, alias.casefold()))
+        if score <= 0:
+            continue
+        # 同分取 id 小的，结果稳定
+        candidate = (score, -point.id)
+        if best is None or candidate > best:
+            best = candidate
+            best_point = point
+
+    if best_point is None:
+        return None
+    return {
+        "id": best_point.id,
+        "name": best_point.name,
+        "parent_id": best_point.parent_id,
+        "aliases": aliases.get(best_point.id, []),
+    }
+
+
 def _create_point(
     session: Session,
     *,

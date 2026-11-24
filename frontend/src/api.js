@@ -160,7 +160,10 @@ export function createSseParser(onEvent) {
   }
 }
 
-async function openChatStream(message, token, signal) {
+async function openChatStream(message, token, signal, { scene = 'chat', classId = null, retry = false } = {}) {
+  const body = { message, scene }
+  if (classId != null) body.class_id = classId
+  if (retry) body.retry = true
   return fetch('/api/chat/stream', {
     method: 'POST',
     headers: {
@@ -168,16 +171,16 @@ async function openChatStream(message, token, signal) {
       Accept: 'text/event-stream',
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
     },
-    body: JSON.stringify({ message }),
+    body: JSON.stringify(body),
     signal,
   })
 }
 
-export async function streamChat(message, { signal, onEvent } = {}) {
+export async function streamChat(message, { signal, onEvent, scene = 'chat', classId = null, retry = false } = {}) {
   const auth = loadAuth()
   let res
   try {
-    res = await openChatStream(message, auth?.accessToken, signal)
+    res = await openChatStream(message, auth?.accessToken, signal, { scene, classId, retry })
   } catch (error) {
     if (error?.name === 'AbortError') throw error
     throw new ApiError('连不上服务器，请确认后端已启动')
@@ -186,7 +189,7 @@ export async function streamChat(message, { signal, onEvent } = {}) {
   if (res.status === 401 && auth?.refreshToken) {
     try {
       const token = await refreshOnce()
-      res = await openChatStream(message, token, signal)
+      res = await openChatStream(message, token, signal, { scene, classId, retry })
     } catch (error) {
       if (error?.name === 'AbortError') throw error
       clearAuth()
@@ -240,6 +243,14 @@ export const login = async (username, password) => {
 }
 
 export const currentUser = () => loadAuth()?.user ?? null
+
+export const getPracticePlan = (questionIds) =>
+  request(`/practice/plan?question_ids=${encodeURIComponent(questionIds.join(','))}`)
+
+export const getChatHistory = (classId = null) => {
+  const query = classId != null ? `?class_id=${encodeURIComponent(classId)}` : ''
+  return request(`/chat/history${query}`)
+}
 
 export const logout = () => {
   clearAuth()

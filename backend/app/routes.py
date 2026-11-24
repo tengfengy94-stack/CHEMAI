@@ -11,6 +11,15 @@ from sqlalchemy.orm import Session
 
 from app import clock, events
 from app.answers import judge_answer, score_for
+from app.attempts import (
+    AttemptNotFound,
+    GRADING_LEASE_SECONDS,
+    attempt_detail,
+    get_attempt_record,
+    grading_in_progress,
+    require_attempt_reader,
+    wrong_questions_query,
+)
 from app.auth import (
     AccessDeniedError,
     create_token,
@@ -22,6 +31,7 @@ from app.auth import (
     verify_password,
 )
 from app.envelope import fail, ok
+from app.question_search import build_question_query
 from app.models import (
     AnswerItem,
     AnswerRecord,
@@ -97,15 +107,10 @@ def papers_using_question(session: Session, question_id: int) -> int:
 
 PAPER_STATUSES = ("draft", "published")
 ATTEMPT_STATUSES = ("pending", "in_progress", "submitted", "graded")
-GRADING_LEASE_SECONDS = 60
 
 
 class PaperNotFound(Exception):
     """卷子不存在，main.py 统一转 404。"""
-
-
-class AttemptNotFound(Exception):
-    """作答记录不存在，main.py 统一转 404。"""
 
 
 class ClassNotFound(Exception):
@@ -127,21 +132,6 @@ def get_owned_paper(paper_id: int, user: User, session: Session) -> Paper:
     return paper
 
 
-def get_attempt_record(attempt_id: int, session: Session) -> AnswerRecord:
-    record = session.get(AnswerRecord, attempt_id)
-    if record is None:
-        raise AttemptNotFound()
-    return record
-
-
-def require_attempt_reader(record: AnswerRecord, user: User) -> None:
-    """学生只能看自己的；管理员可读全部；老师没有这里的结果入口。"""
-    if user.role == "admin":
-        return
-    if user.role != "student" or record.student_id != user.id:
-        raise AccessDeniedError("只能看自己的作答记录")
-
-
 def require_attempt_owner(record: AnswerRecord, user: User) -> None:
     """开始、交卷、重试只能是记录所属学生；管理员也不能代替。"""
     if user.role == "admin":
@@ -150,15 +140,6 @@ def require_attempt_owner(record: AnswerRecord, user: User) -> None:
         raise AccessDeniedError("只有学生可以作答")
     if record.student_id != user.id:
         raise AccessDeniedError("只能操作自己的作答记录")
-
-
-def _grading_in_progress(record: AnswerRecord) -> bool:
-    if record.status != "submitted" or record.score is not None:
-        return False
-    started = clock.as_utc(record.grading_started_at)
-    if started is None:
-        return False
-    return (utcnow() - started).total_seconds() < GRADING_LEASE_SECONDS
 
 
 def _paper_detail(session: Session, paper: Paper) -> dict:
@@ -170,46 +151,6 @@ def _paper_detail(session: Session, paper: Paper) -> dict:
     ).all()
     data = paper_to_dict(paper, len(rows))
     data["questions"] = [paper_question_to_dict(pq, q) for pq, q in rows]
-    return data
-
-
-def _attempt_detail(session: Session, record: AnswerRecord) -> dict:
-    paper = session.get(Paper, record.paper_id)
-    data = attempt_to_dict(
-        record, paper.title if paper else "", _grading_in_progress(record)
-    )
-    if record.status == "pending":
-        data["questions"] = []
-        return data
-
-    rows = session.execute(
-        select(PaperQuestion, Question, AnswerItem)
-        .join(Question, Question.id == PaperQuestion.question_id)
-        .outerjoin(
-            AnswerItem,
-            (AnswerItem.record_id == record.id)
-            & (AnswerItem.question_id == PaperQuestion.question_id),
-        )
-        .where(PaperQuestion.paper_id == record.paper_id)
-        .order_by(PaperQuestion.position, PaperQuestion.id)
-    ).all()
-    questions = []
-    for pq, question, item in rows:
-        entry = {
-            "id": question.id,
-            "position": pq.position,
-            "stem": question.stem,
-            "type": question.type,
-            "options": question.options,
-        }
-        if record.status in ("submitted", "graded"):
-            entry["student_answer"] = item.student_answer if item else ""
-        if record.status == "graded":
-            entry["answer"] = question.answer
-            entry["explanation"] = question.explanation
-            entry["is_correct"] = bool(item.is_correct) if item else False
-        questions.append(entry)
-    data["questions"] = questions
     return data
 
 
@@ -330,37 +271,6 @@ def refresh(request: Request, session: Session = Depends(get_session)):
 @router.get("/health")
 def health():
     return ok({"status": "ok"})
-
-
-def build_question_query(
-    user: User,
-    difficulty: int | None = None,
-    status: str | None = None,
-    keyword: str | None = None,
-):
-    """角色条件先加，用户筛选只收窄；两者的顺序不变量：筛选永远不能放大范围。"""
-    if user.role == "teacher":
-        conditions = [Question.created_by == user.username]
-    elif user.role == "student":
-        # 学生只看已通过（设计/02 §4.2）；这条与筛选无关，永远在
-        conditions = [Question.status == "approved"]
-    elif user.role == "admin":
-        conditions = []
-    else:
-        # 未知角色不能落到"管理员全量"，直接拒绝
-        raise AccessDeniedError("角色不认识，不能查看题目")
-
-    if difficulty is not None:
-        conditions.append(Question.difficulty == difficulty)
-    if status is not None:
-        conditions.append(Question.status == status)
-    if keyword:
-        conditions.append(Question.stem.contains(keyword))
-
-    stmt = select(Question)
-    if conditions:
-        stmt = stmt.where(*conditions)
-    return stmt
 
 
 @router.get("/questions")
@@ -815,58 +725,10 @@ def list_attempts(
     return ok(
         {
             "items": [
-                attempt_to_dict(record, title, _grading_in_progress(record))
+                attempt_to_dict(record, title, grading_in_progress(record))
                 for record, title in rows
             ]
         }
-    )
-
-
-def _wrong_questions_query(user: User):
-    """错题清单：先按学生 + 题目编号，外层只留每题最近一次答错。
-
-    去重放在 SQL 里，管理员看全部时不会把不同学生的同一道题合并。
-    """
-    ranked = (
-        select(
-            AnswerItem.question_id.label("question_id"),
-            AnswerItem.student_answer.label("student_answer"),
-            AnswerItem.id.label("item_id"),
-            AnswerRecord.id.label("attempt_id"),
-            AnswerRecord.student_id.label("student_id"),
-            AnswerRecord.submitted_at.label("submitted_at"),
-            User.name.label("student_name"),
-            Paper.id.label("paper_id"),
-            Paper.title.label("paper_title"),
-            Question.stem.label("stem"),
-            Question.type.label("type"),
-            Question.options.label("options"),
-            Question.answer.label("answer"),
-            Question.explanation.label("explanation"),
-            func.row_number()
-            .over(
-                partition_by=[AnswerRecord.student_id, AnswerItem.question_id],
-                order_by=[AnswerRecord.submitted_at.desc(), AnswerItem.id.desc()],
-            )
-            .label("rn"),
-        )
-        .join(AnswerRecord, AnswerRecord.id == AnswerItem.record_id)
-        .join(User, User.id == AnswerRecord.student_id)
-        .join(Paper, Paper.id == AnswerRecord.paper_id)
-        .join(Question, Question.id == AnswerItem.question_id)
-        .where(
-            AnswerItem.is_correct.is_(False),
-            AnswerRecord.status == "graded",
-        )
-    )
-    if user.role == "student":
-        ranked = ranked.where(AnswerRecord.student_id == user.id)
-
-    ranked_subquery = ranked.subquery()
-    return (
-        select(ranked_subquery)
-        .where(ranked_subquery.c.rn == 1)
-        .order_by(ranked_subquery.c.submitted_at.desc(), ranked_subquery.c.item_id.desc())
     )
 
 
@@ -877,7 +739,7 @@ def list_wrong_questions(
 ):
     if user.role not in ("student", "admin"):
         raise AccessDeniedError("只有学生可以查看自己的错题，管理员可以查看全部")
-    rows = session.execute(_wrong_questions_query(user)).mappings().all()
+    rows = session.execute(wrong_questions_query(user)).mappings().all()
     return ok({"items": [wrong_question_to_dict(row) for row in rows]})
 
 
@@ -889,7 +751,7 @@ def get_attempt(
 ):
     record = get_attempt_record(attempt_id, session)
     require_attempt_reader(record, user)
-    return ok(_attempt_detail(session, record))
+    return ok(attempt_detail(session, record))
 
 
 @router.post("/attempts/{attempt_id}/start")
@@ -902,7 +764,7 @@ def start_attempt(
     require_attempt_owner(record, user)
 
     if record.status == "in_progress":
-        return ok(_attempt_detail(session, record))
+        return ok(attempt_detail(session, record))
     if record.status != "pending":
         return _start_state_error(record)
 
@@ -915,11 +777,11 @@ def start_attempt(
     if changed.rowcount == 0:
         session.refresh(record)
         if record.status == "in_progress":
-            return ok(_attempt_detail(session, record))
+            return ok(attempt_detail(session, record))
         return _start_state_error(record)
 
     session.refresh(record)
-    return ok(_attempt_detail(session, record))
+    return ok(attempt_detail(session, record))
 
 
 @router.post("/attempts/{attempt_id}/submit")
@@ -997,10 +859,10 @@ def submit_attempt(
         except Exception:
             session.rollback()
         session.refresh(record)
-        return ok(_attempt_detail(session, record))
+        return ok(attempt_detail(session, record))
 
     session.refresh(record)
-    return ok(_attempt_detail(session, record))
+    return ok(attempt_detail(session, record))
 
 
 @router.post("/attempts/{attempt_id}/retry-grading")
@@ -1052,7 +914,7 @@ def retry_grading(
         except Exception:
             session.rollback()
         session.refresh(record)
-        return ok(_attempt_detail(session, record))
+        return ok(attempt_detail(session, record))
 
     session.refresh(record)
-    return ok(_attempt_detail(session, record))
+    return ok(attempt_detail(session, record))
