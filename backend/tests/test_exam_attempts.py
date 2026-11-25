@@ -111,6 +111,7 @@ def test_attempt_list_and_detail_fields_by_status(client, database_url, classroo
     assert graded["questions"][0]["answer"] == "A"
     assert graded["questions"][0]["student_answer"] == "A"
     assert graded["questions"][0]["is_correct"] is True
+    assert graded["questions"][0]["score"] == 100.0
 
     assert client.get(f"/api/attempts/{attempt['id']}", headers=auth(s2)).status_code == 403
     assert client.get("/api/attempts", headers=auth(t1)).status_code == 403
@@ -287,7 +288,7 @@ def test_grading_rules_through_api(client, classroom):
 
 # ---- 4.4 判分失败与重试 ----
 
-def test_grading_failure_leaves_submitted_and_retry_regrades(
+def test_grading_failure_leaves_submitted_and_resubmit_regrades(
     client, database_url, classroom, monkeypatch
 ):
     t1 = login(client, "t1")
@@ -318,25 +319,16 @@ def test_grading_failure_leaves_submitted_and_retry_regrades(
         (question["id"], "A", None)
     ]
 
-    # 判分失败后记录是 submitted，重复交卷仍然 400，不能从交卷入口走重试
-    duplicate = client.post(
+    # 判分失败后再次提交：不重收答案，只重判；后到的 B 不能覆盖已收的 A。
+    monkeypatch.setattr(routes, "grade_record", original)
+    resubmitted = client.post(
         f"/api/attempts/{attempt['id']}/submit",
         headers=auth(s1),
         json={"answers": [{"question_id": question["id"], "answer": "B"}]},
     )
-    assert duplicate.status_code == 400
-    assert "已经交过了" in duplicate.json()["error"]
-    assert answer_items(database_url, attempt["id"]) == [
-        (question["id"], "A", None)
-    ]
-
-    monkeypatch.setattr(routes, "grade_record", original)
-    retried = client.post(
-        f"/api/attempts/{attempt['id']}/retry-grading", headers=auth(s1)
-    )
-    assert retried.status_code == 200, retried.text
-    assert retried.json()["data"]["status"] == "graded"
-    assert retried.json()["data"]["score"] == 100.0
+    assert resubmitted.status_code == 200, resubmitted.text
+    assert resubmitted.json()["data"]["status"] == "graded"
+    assert resubmitted.json()["data"]["score"] == 100.0
     assert answer_items(database_url, attempt["id"]) == [
         (question["id"], "A", True)
     ]
@@ -379,7 +371,7 @@ def test_slow_grading_rejects_second_submit_without_overwriting(
             json={"answers": [{"question_id": question["id"], "answer": "B"}]},
         )
         assert second.status_code == 400
-        assert "已经交过了" in second.json()["error"]
+        assert "判分正在进行" in second.json()["error"]
         release_grading.set()
         first_response = first.result(timeout=10)
 
@@ -483,3 +475,49 @@ def test_invalid_bodies_are_422_and_unknown_status_is_400(
     assert client.post(
         f"/api/attempts/{attempt['id']}/retry-grading", headers=auth(s1)
     ).status_code == 400
+
+
+def test_teacher_reads_own_class_attempt_only(client, classroom, make_user, make_class):
+    t1 = login(client, "t1")
+    paper, (question,) = build_exam(client, t1, classroom, [QUESTION])
+    s1, s2 = login(client, "s1"), login(client, "s2")
+    attempt = attempt_for_paper(client, s1, paper["id"])
+    client.post(f"/api/attempts/{attempt['id']}/start", headers=auth(s1))
+    submitted = client.post(
+        f"/api/attempts/{attempt['id']}/submit",
+        headers=auth(s1),
+        json={"answers": [{"question_id": question["id"], "answer": "B"}]},
+    )
+    assert submitted.status_code == 200, submitted.text
+
+    own = client.get(f"/api/attempts/{attempt['id']}", headers=auth(t1))
+    assert own.status_code == 200, own.text
+    assert own.json()["data"]["questions"][0]["student_answer"] == "B"
+
+    assert client.get(f"/api/attempts/{attempt['id']}", headers=auth(s2)).status_code == 403
+    admin = login(client, "admin")
+    assert client.get(f"/api/attempts/{attempt['id']}", headers=auth(admin)).status_code == 200
+
+    make_user("t2", role="teacher")
+    make_class("别班", "t2")
+    t2 = login(client, "t2")
+    assert client.get(f"/api/attempts/{attempt['id']}", headers=auth(t2)).status_code == 403
+
+
+def test_attempts_pagination_metadata(client, classroom):
+    t1 = login(client, "t1")
+    build_exam(client, t1, classroom, [QUESTION])
+    admin = login(client, "admin")
+
+    first = client.get("/api/attempts?page=1&page_size=1", headers=auth(admin))
+    assert first.status_code == 200, first.text
+    data = first.json()["data"]
+    assert data["total"] == 2
+    assert data["page"] == 1
+    assert data["page_size"] == 1
+    assert len(data["items"]) == 1
+
+    second = client.get("/api/attempts?page=2&page_size=1", headers=auth(admin))
+    assert second.status_code == 200, second.text
+    assert len(second.json()["data"]["items"]) == 1
+    assert second.json()["data"]["items"][0]["id"] != data["items"][0]["id"]

@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.models import (
     KnowledgePoint,
     KnowledgePointAlias,
+    Question,
     QuestionKnowledgePoint,
     User,
     utcnow,
@@ -88,6 +89,61 @@ def _get(session: Session, point_id: int) -> KnowledgePoint:
     if point is None:
         raise KnowledgePointNotFound()
     return point
+
+
+def get_point(session: Session, point_id: int) -> KnowledgePoint:
+    """公开的取点入口：路由需要区分“不存在”和“没有权限”。"""
+    return _get(session, point_id)
+
+
+def point_questions(
+    session: Session,
+    point_id: int,
+    *,
+    created_by: str | None = None,
+    page: int = 1,
+    page_size: int = 20,
+) -> tuple[list[tuple[Question, bool]], int]:
+    """某个知识点下的题目及“是否主知识点”；老师只看自己建的题。"""
+    _get(session, point_id)
+    stmt = (
+        select(Question, QuestionKnowledgePoint.is_primary)
+        .join(
+            QuestionKnowledgePoint,
+            QuestionKnowledgePoint.question_id == Question.id,
+        )
+        .where(QuestionKnowledgePoint.knowledge_point_id == point_id)
+    )
+    if created_by is not None:
+        stmt = stmt.where(Question.created_by == created_by)
+    total = session.scalar(select(func.count()).select_from(stmt.subquery())) or 0
+    rows = session.execute(
+        stmt.order_by(Question.created_at.desc(), Question.id.asc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    ).all()
+    return [(question, bool(primary)) for question, primary in rows], int(total)
+
+
+def question_points(session: Session, question_id: int) -> list[dict]:
+    """一道题关联的所有知识点及主次。"""
+    rows = session.execute(
+        select(
+            KnowledgePoint.id,
+            KnowledgePoint.name,
+            QuestionKnowledgePoint.is_primary,
+        )
+        .join(
+            QuestionKnowledgePoint,
+            QuestionKnowledgePoint.knowledge_point_id == KnowledgePoint.id,
+        )
+        .where(QuestionKnowledgePoint.question_id == question_id)
+        .order_by(KnowledgePoint.id)
+    ).all()
+    return [
+        {"id": point_id, "name": name, "is_primary": bool(primary)}
+        for point_id, name, primary in rows
+    ]
 
 
 def point_to_dict(session: Session, point: KnowledgePoint) -> dict:
@@ -289,9 +345,14 @@ def tree(session: Session) -> list[dict]:
 
 
 def set_question_points(
-    session: Session, question_id: int, point_ids: list[int]
+    session: Session,
+    question_id: int,
+    point_ids: list[int],
+    primary_point_id: int | None = None,
 ) -> list[dict]:
     unique_ids = list(dict.fromkeys(point_ids))
+    if primary_point_id is not None and primary_point_id not in unique_ids:
+        raise KnowledgeError("主知识点必须属于这道题的关联")
     if unique_ids:
         existing = set(
             session.scalars(
@@ -311,21 +372,13 @@ def set_question_points(
     for point_id in unique_ids:
         session.add(
             QuestionKnowledgePoint(
-                question_id=question_id, knowledge_point_id=point_id
+                question_id=question_id,
+                knowledge_point_id=point_id,
+                is_primary=point_id == primary_point_id,
             )
         )
     _commit_or_conflict(session)
-
-    points = session.scalars(
-        select(KnowledgePoint)
-        .join(
-            QuestionKnowledgePoint,
-            QuestionKnowledgePoint.knowledge_point_id == KnowledgePoint.id,
-        )
-        .where(QuestionKnowledgePoint.question_id == question_id)
-        .order_by(KnowledgePoint.id)
-    ).all()
-    return [{"id": point.id, "name": point.name} for point in points]
+    return question_points(session, question_id)
 
 
 def _merge_points(
@@ -358,7 +411,16 @@ def _merge_points(
     for alias in merged_aliases:
         session.add(KnowledgePointAlias(knowledge_point_id=target.id, alias=alias))
 
-    # 题目关联：目标已有的题去掉源里的重复行，其余改挂到目标
+    # 题目关联：目标已有的题去掉源里的重复行，其余改挂到目标。
+    # 如果被去掉的源关联是主知识点，把目标上那道题的关联补成主。
+    source_primary_ids = set(
+        session.scalars(
+            select(QuestionKnowledgePoint.question_id).where(
+                QuestionKnowledgePoint.knowledge_point_id == source.id,
+                QuestionKnowledgePoint.is_primary.is_(True),
+            )
+        ).all()
+    )
     target_question_ids = set(
         session.scalars(
             select(QuestionKnowledgePoint.question_id).where(
@@ -373,6 +435,16 @@ def _merge_points(
                 QuestionKnowledgePoint.question_id.in_(target_question_ids),
             )
         )
+        promoted = source_primary_ids & target_question_ids
+        if promoted:
+            session.execute(
+                update(QuestionKnowledgePoint)
+                .where(
+                    QuestionKnowledgePoint.knowledge_point_id == target.id,
+                    QuestionKnowledgePoint.question_id.in_(promoted),
+                )
+                .values(is_primary=True)
+            )
     session.execute(
         update(QuestionKnowledgePoint)
         .where(QuestionKnowledgePoint.knowledge_point_id == source.id)

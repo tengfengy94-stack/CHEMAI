@@ -95,4 +95,4 @@ def class_exam_report(
     session: Session = Depends(get_session),
 ):
     _class_or_403(class_id, user, session)
-    return ok(class_reporting.exam_report(session, class_id, paper_id))
+    return ok(class_reporting.exam_report(session, class_id, paper_id, user))

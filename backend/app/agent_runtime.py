@@ -1,6 +1,8 @@
 """Agent 图装配：按角色裁剪工具，接场景提示、摘要压缩与 8 次调用上限。"""
+import asyncio
 import json
 import logging
+import os
 import re
 from typing import Any
 
@@ -35,6 +37,17 @@ MAX_MODEL_CALLS = 8
 RECURSION_LIMIT = 100
 HISTORY_KEEP = 20
 HISTORY_TRIGGER = 30
+
+
+def tool_timeout_seconds() -> float:
+    """单个工具的最长等待；超时按“查不到”处理，避免整轮对话卡死。"""
+    raw = os.environ.get("CHEMAI_TOOL_TIMEOUT", "").strip()
+    if not raw:
+        return 15.0
+    try:
+        return max(1.0, float(raw))
+    except ValueError:
+        return 15.0
 
 CHINESE_SUMMARY_PROMPT = """你是这门课的教学助理。请把下面的对话压缩成一段中文摘要，
 保留学生问过的知识点、已经查到的结论、还没完成的下一步；不要编造数据。
@@ -111,7 +124,6 @@ class ChineseModelCallLimitMiddleware(AgentMiddleware):
 
     @hook_config(can_jump_to=["end"])
     def before_model(self, state, runtime):
-        thread_count = state.get("thread_model_call_count", 0)
         run_count = state.get("run_model_call_count", 0)
         if run_count >= self.run_limit:
             return {
@@ -156,7 +168,12 @@ class ToolFailureMiddleware(AgentMiddleware):
 
     async def awrap_tool_call(self, request, handler):
         try:
-            return await handler(request)
+            return await asyncio.wait_for(
+                handler(request), timeout=tool_timeout_seconds()
+            )
+        except asyncio.TimeoutError:
+            logger.warning("工具执行超时：%s", getattr(request, "tool_call", None))
+            return self._failure(request, TimeoutError("tool timeout"))
         except Exception as exc:  # noqa: BLE001 - 工具失败不中断对话
             return self._failure(request, exc)
 

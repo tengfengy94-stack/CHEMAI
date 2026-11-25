@@ -10,6 +10,7 @@ import {
   Input,
   List,
   Radio,
+  Select,
   Space,
   Spin,
   Tabs,
@@ -22,88 +23,106 @@ import { QUESTION_TYPES, WRONG_SOURCE_LABELS } from '../../constants.js'
 import { dueLabel, optionLetter, timeText } from '../../format.js'
 import StudentHeader from './StudentHeader.jsx'
 
-const tasksByQuestion = (items) => new Map(items.map((task) => [task.question_id, task]))
-
 export default function StudentReview() {
   const navigate = useNavigate()
   const { message } = AntApp.useApp()
   const [tab, setTab] = useState('due')
   const [due, setDue] = useState([])
   const [wrong, setWrong] = useState([])
-  const [taskMap, setTaskMap] = useState(new Map())
   const [loading, setLoading] = useState(true)
   const [dueError, setDueError] = useState('')
   const [wrongError, setWrongError] = useState('')
-  const [taskError, setTaskError] = useState('')
   const [queueOnly, setQueueOnly] = useState(false)
+  const [sourceFilter, setSourceFilter] = useState('all')
+  const [duePage, setDuePage] = useState(1)
+  const [duePageSize, setDuePageSize] = useState(20)
+  const [dueTotal, setDueTotal] = useState(0)
+  const [wrongPage, setWrongPage] = useState(1)
+  const [wrongPageSize, setWrongPageSize] = useState(20)
+  const [wrongTotal, setWrongTotal] = useState(0)
   const [activeTask, setActiveTask] = useState(null)
   const [answer, setAnswer] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [result, setResult] = useState(null)
 
-  const loadDue = useCallback(async () => {
-    try {
-      const data = await listReviewTasks('due')
-      setDue(data.items)
-      setDueError('')
-    } catch (err) {
-      setDueError(err.message)
-    } finally {
-      setLoading(false)
-    }
-  }, [])
+  const loadDue = useCallback(
+    async (page = duePage) => {
+      try {
+        const data = await listReviewTasks('due', {
+          page,
+          pageSize: duePageSize,
+        })
+        setDue(data.items)
+        setDueTotal(data.total)
+        setDuePageSize(data.page_size)
+        setDuePage(page)
+        setDueError('')
+      } catch (err) {
+        setDueError(err.message)
+      } finally {
+        setLoading(false)
+      }
+    },
+    [duePage, duePageSize],
+  )
 
-  const loadWrong = useCallback(async () => {
-    const [wrongResult, taskResult] = await Promise.allSettled([
-      listWrongQuestions(),
-      listReviewTasks('all'),
-    ])
-    if (wrongResult.status === 'fulfilled') {
-      setWrong(wrongResult.value.items)
-      setWrongError('')
-    } else {
-      setWrongError(wrongResult.reason.message)
-    }
-    if (taskResult.status === 'fulfilled') {
-      setTaskMap(tasksByQuestion(taskResult.value.items))
-      setTaskError('')
-    } else {
-      setTaskError(taskResult.reason.message)
-    }
-    setLoading(false)
-  }, [])
+  const loadWrong = useCallback(
+    async (page = wrongPage) => {
+      try {
+        const data = await listWrongQuestions({
+          source: sourceFilter === 'all' ? undefined : sourceFilter,
+          inQueue: queueOnly || undefined,
+          page,
+          pageSize: wrongPageSize,
+        })
+        setWrong(data.items)
+        setWrongTotal(data.total)
+        setWrongPageSize(data.page_size)
+        setWrongPage(page)
+        setWrongError('')
+      } catch (err) {
+        setWrongError(err.message)
+      } finally {
+        setLoading(false)
+      }
+    },
+    [sourceFilter, queueOnly, wrongPage, wrongPageSize],
+  )
 
   useEffect(() => {
     let cancelled = false
     async function load() {
       if (tab === 'due') {
         try {
-          const data = await listReviewTasks('due')
+          const data = await listReviewTasks('due', {
+            page: duePage,
+            pageSize: duePageSize,
+          })
           if (!cancelled) {
             setDue(data.items)
+            setDueTotal(data.total)
+            setDuePageSize(data.page_size)
             setDueError('')
           }
         } catch (err) {
           if (!cancelled) setDueError(err.message)
         }
       } else {
-        const [wrongResult, taskResult] = await Promise.allSettled([
-          listWrongQuestions(),
-          listReviewTasks('all'),
-        ])
-        if (!cancelled) {
-          if (wrongResult.status === 'fulfilled') {
-            setWrong(wrongResult.value.items)
+        try {
+          const data = await listWrongQuestions({
+            source: sourceFilter === 'all' ? undefined : sourceFilter,
+            inQueue: queueOnly || undefined,
+            page: wrongPage,
+            pageSize: wrongPageSize,
+          })
+          if (!cancelled) {
+            setWrong(data.items)
+            setWrongTotal(data.total)
+            setWrongPageSize(data.page_size)
             setWrongError('')
-          } else {
-            setWrongError(wrongResult.reason.message)
           }
-          if (taskResult.status === 'fulfilled') {
-            setTaskMap(tasksByQuestion(taskResult.value.items))
-            setTaskError('')
-          } else {
-            setTaskError(taskResult.reason.message)
-          }
+        } catch (err) {
+          if (!cancelled) setWrongError(err.message)
         }
       }
       if (!cancelled) setLoading(false)
@@ -112,13 +131,32 @@ export default function StudentReview() {
     return () => {
       cancelled = true
     }
-  }, [tab])
+  }, [tab, sourceFilter, queueOnly, duePage, duePageSize, wrongPage, wrongPageSize])
+
+  useEffect(() => {
+    if (!loading && tab === 'due' && due.length === 0 && dueTotal > 0 && duePage > 1) {
+      setDuePage(duePage - 1)
+    }
+  }, [loading, tab, due.length, dueTotal, duePage])
+
+  useEffect(() => {
+    if (
+      !loading &&
+      tab === 'wrong' &&
+      wrong.length === 0 &&
+      wrongTotal > 0 &&
+      wrongPage > 1
+    ) {
+      setWrongPage(wrongPage - 1)
+    }
+  }, [loading, tab, wrong.length, wrongTotal, wrongPage])
 
   const switchTab = (next) => {
     setLoading(true)
     setDueError('')
     setWrongError('')
-    setTaskError('')
+    setDuePage(1)
+    setWrongPage(1)
     setTab(next)
   }
 
@@ -126,22 +164,12 @@ export default function StudentReview() {
     setLoading(true)
     setDueError('')
     setWrongError('')
-    setTaskError('')
     if (tab === 'due') loadDue()
     else loadWrong()
   }
 
-  const retryTasks = async () => {
-    setTaskError('')
-    try {
-      const data = await listReviewTasks('all')
-      setTaskMap(tasksByQuestion(data.items))
-    } catch (err) {
-      setTaskError(err.message)
-    }
-  }
-
   const openTask = (task) => {
+    if (!task?.question) return
     setActiveTask(task)
     setResult(null)
     setAnswer(task.question.type === 'multiple' ? [] : '')
@@ -299,6 +327,16 @@ export default function StudentReview() {
     return (
       <List
         dataSource={due}
+        pagination={{
+          current: duePage,
+          pageSize: duePageSize,
+          total: dueTotal,
+          showSizeChanger: false,
+          onChange: (page) => {
+            setLoading(true)
+            setDuePage(page)
+          },
+        }}
         renderItem={(item) => (
           <List.Item
             style={{ display: 'block' }}
@@ -348,43 +386,57 @@ export default function StudentReview() {
         />
       )
     }
-    const visible =
-      queueOnly && !taskError ? wrong.filter((item) => item.task?.in_queue) : wrong
+    const visible = wrong
     return (
       <>
-        {taskError ? (
-          <Alert
-            type="warning"
-            showIcon
-            message="队列状态加载失败，错题列表仍可查看"
-            description={taskError}
-            style={{ marginBottom: 12 }}
-            action={
-              <Button size="small" onClick={retryTasks}>
-                重试
-              </Button>
-            }
+        <Space wrap style={{ marginBottom: 12 }}>
+          <Select
+            value={sourceFilter}
+            onChange={(value) => {
+              setLoading(true)
+              setWrongPage(1)
+              setSourceFilter(value)
+            }}
+            style={{ width: 140 }}
+            options={[
+              { value: 'all', label: '全部来源' },
+              { value: 'exam', label: '考试' },
+              { value: 'practice', label: '练习' },
+              { value: 'review', label: '复习' },
+            ]}
           />
-        ) : null}
-        <Checkbox
-          checked={queueOnly && !taskError}
-          disabled={Boolean(taskError)}
-          onChange={(event) => setQueueOnly(event.target.checked)}
-          style={{ marginBottom: 12 }}
-        >
-          只看还在复习队列里的
-        </Checkbox>
+          <Checkbox
+            checked={queueOnly}
+            onChange={(event) => {
+              setLoading(true)
+              setWrongPage(1)
+              setQueueOnly(event.target.checked)
+            }}
+          >
+            只看还在复习队列里的
+          </Checkbox>
+        </Space>
         {visible.length === 0 ? (
           <Empty
             description={
-              queueOnly && !taskError ? '复习队列里没有错题' : '还没有错题，继续保持'
+              queueOnly ? '复习队列里没有错题' : '还没有错题，继续保持'
             }
           />
         ) : (
           <List
             dataSource={visible}
+            pagination={{
+              current: wrongPage,
+              pageSize: wrongPageSize,
+              total: wrongTotal,
+              showSizeChanger: false,
+              onChange: (page) => {
+                setLoading(true)
+                setWrongPage(page)
+              },
+            }}
             renderItem={(item) => {
-              const task = taskMap.get(item.question_id)
+              const task = item.task
               return (
                 <List.Item style={{ display: 'block' }}>
                   <Flex justify="space-between" align="flex-start" gap={12}>
@@ -393,13 +445,21 @@ export default function StudentReview() {
                     </Typography.Paragraph>
                     <Space>
                       <Tag>{QUESTION_TYPES[item.type] ?? item.type}</Tag>
-                      {taskError ? (
-                        <Tag>队列状态未知</Tag>
-                      ) : task?.in_queue ? (
+                      {task?.in_queue ? (
                         <Button
                           type="link"
                           size="small"
-                          onClick={() => openTask(task)}
+                          onClick={() =>
+                            openTask({
+                              ...task,
+                              question: {
+                                id: item.question_id,
+                                stem: item.stem,
+                                type: item.type,
+                                options: item.options,
+                              },
+                            })
+                          }
                         >
                           去复习
                         </Button>
@@ -421,8 +481,9 @@ export default function StudentReview() {
                     解析：{item.explanation || '暂无解析'}
                   </Typography.Paragraph>
                   <Typography.Text type="secondary">
-                    来源：{WRONG_SOURCE_LABELS[item.source] ?? item.source} ·{' '}
-                    {item.paper_title} · 最近答错 {timeText(item.last_wrong_at)}
+                    来源：{WRONG_SOURCE_LABELS[item.source] ?? item.source}
+                    {item.paper_title ? ` · ${item.paper_title}` : ''} · 最近答错{' '}
+                    {timeText(item.last_wrong_at)}
                   </Typography.Text>
                 </List.Item>
               )

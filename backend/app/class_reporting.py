@@ -8,6 +8,7 @@ from sqlalchemy import case, func, or_, select
 from sqlalchemy.orm import Session
 
 from app import clock, reporting
+from app.auth import AccessDeniedError
 from app.models import (
     AnswerItem,
     AnswerRecord,
@@ -23,9 +24,20 @@ class ClassExamNotFound(Exception):
     """该班没有这次考试的作答记录，main.py 统一转 404。"""
 
 
-def class_exams(session: Session, class_id: int) -> list[dict]:
+def _paper_scope(viewer: User):
+    """老师只看自己发布的卷子；管理员代发的共享卷仍可见。"""
+    if viewer.role != "teacher":
+        return None
+    admin_names = select(User.username).where(User.role == "admin")
+    return or_(
+        Paper.created_by == viewer.username,
+        Paper.created_by.in_(admin_names),
+    )
+
+
+def class_exams(session: Session, class_id: int, viewer: User) -> list[dict]:
     """这个班考过的卷子：按发布快照去重，发布时间取最早一条作答记录。"""
-    rows = session.execute(
+    stmt = (
         select(
             Paper.id.label("paper_id"),
             Paper.title.label("paper_title"),
@@ -34,8 +46,14 @@ def class_exams(session: Session, class_id: int) -> list[dict]:
         )
         .join(AnswerRecord, AnswerRecord.paper_id == Paper.id)
         .where(AnswerRecord.class_id == class_id)
-        .group_by(Paper.id, Paper.title)
-        .order_by(func.min(AnswerRecord.created_at).desc(), Paper.id.desc())
+    )
+    scope = _paper_scope(viewer)
+    if scope is not None:
+        stmt = stmt.where(scope)
+    rows = session.execute(
+        stmt.group_by(Paper.id, Paper.title).order_by(
+            func.min(AnswerRecord.created_at).desc(), Paper.id.desc()
+        )
     ).all()
 
     paper_ids = [row.paper_id for row in rows]
@@ -81,11 +99,15 @@ def _knowledge_distribution(session: Session, class_id: int) -> list[dict]:
 
 def _class_student_rows(session: Session, class_id: int, viewer: User) -> list[dict]:
     """班级学生表：历史快照里的学生 + 当前在班学生，后者可能是「未作答」。"""
-    snapshot_ids = (
+    scope = _paper_scope(viewer)
+    snapshot_stmt = (
         select(AnswerRecord.student_id)
+        .join(Paper, Paper.id == AnswerRecord.paper_id)
         .where(AnswerRecord.class_id == class_id)
-        .distinct()
     )
+    if scope is not None:
+        snapshot_stmt = snapshot_stmt.where(scope)
+    snapshot_ids = snapshot_stmt.distinct()
     users = session.execute(
         select(User.id, User.name, User.class_id)
         .where(
@@ -97,7 +119,7 @@ def _class_student_rows(session: Session, class_id: int, viewer: User) -> list[d
     if not users:
         return []
 
-    ranked = (
+    ranked_stmt = (
         select(
             AnswerRecord.student_id,
             AnswerRecord.score,
@@ -109,13 +131,16 @@ def _class_student_rows(session: Session, class_id: int, viewer: User) -> list[d
             )
             .label("rn"),
         )
+        .join(Paper, Paper.id == AnswerRecord.paper_id)
         .where(
             AnswerRecord.class_id == class_id,
             AnswerRecord.status == "graded",
             AnswerRecord.graded_at.is_not(None),
         )
-        .subquery()
     )
+    if scope is not None:
+        ranked_stmt = ranked_stmt.where(scope)
+    ranked = ranked_stmt.subquery()
     latest = {
         row.student_id: row
         for row in session.execute(
@@ -125,32 +150,38 @@ def _class_student_rows(session: Session, class_id: int, viewer: User) -> list[d
         ).all()
     }
 
+    wrong_stmt = (
+        select(
+            AnswerRecord.student_id,
+            func.count(func.distinct(AnswerItem.question_id)),
+        )
+        .join(AnswerItem, AnswerItem.record_id == AnswerRecord.id)
+        .join(Paper, Paper.id == AnswerRecord.paper_id)
+        .where(
+            AnswerRecord.class_id == class_id,
+            AnswerRecord.status == "graded",
+            AnswerItem.is_correct.is_(False),
+        )
+    )
+    if scope is not None:
+        wrong_stmt = wrong_stmt.where(scope)
     wrong_counts = dict(
-        session.execute(
-            select(
-                AnswerRecord.student_id,
-                func.count(func.distinct(AnswerItem.question_id)),
-            )
-            .join(AnswerItem, AnswerItem.record_id == AnswerRecord.id)
-            .where(
-                AnswerRecord.class_id == class_id,
-                AnswerRecord.status == "graded",
-                AnswerItem.is_correct.is_(False),
-            )
-            .group_by(AnswerRecord.student_id)
-        ).all()
+        session.execute(wrong_stmt.group_by(AnswerRecord.student_id)).all()
     )
 
+    pending_stmt = (
+        select(AnswerRecord.student_id, func.count())
+        .join(Paper, Paper.id == AnswerRecord.paper_id)
+        .where(
+            AnswerRecord.class_id == class_id,
+            AnswerRecord.status == "submitted",
+            AnswerRecord.score.is_(None),
+        )
+    )
+    if scope is not None:
+        pending_stmt = pending_stmt.where(scope)
     grading_pending = dict(
-        session.execute(
-            select(AnswerRecord.student_id, func.count())
-            .where(
-                AnswerRecord.class_id == class_id,
-                AnswerRecord.status == "submitted",
-                AnswerRecord.score.is_(None),
-            )
-            .group_by(AnswerRecord.student_id)
-        ).all()
+        session.execute(pending_stmt.group_by(AnswerRecord.student_id)).all()
     )
 
     rows = []
@@ -182,7 +213,7 @@ def _class_student_rows(session: Session, class_id: int, viewer: User) -> list[d
 
 def class_overview(session: Session, class_id: int, viewer: User) -> dict:
     klass = session.get(Class, class_id)
-    exams = class_exams(session, class_id)
+    exams = class_exams(session, class_id, viewer)
     return {
         "class": {"id": klass.id, "name": klass.name},
         "exam_count": len(exams),
@@ -294,13 +325,46 @@ def _unsubmitted(session: Session, class_id: int, paper_id: int) -> list[dict]:
     ]
 
 
-def exam_report(session: Session, class_id: int, paper_id: int) -> dict:
+def _exam_students(session: Session, class_id: int, paper_id: int) -> list[dict]:
+    """这次考试全班的作答记录；老师用来下钻到单个学生的答卷。"""
+    rows = session.execute(
+        select(AnswerRecord, User.name)
+        .join(User, User.id == AnswerRecord.student_id)
+        .where(
+            AnswerRecord.class_id == class_id,
+            AnswerRecord.paper_id == paper_id,
+        )
+        .order_by(User.name, User.id)
+    ).all()
+    return [
+        {
+            "attempt_id": record.id,
+            "student_id": record.student_id,
+            "student_name": name,
+            "status": record.status,
+            "score": None if record.score is None else float(record.score),
+            "submitted_at": clock.iso_utc(record.submitted_at),
+            "graded_at": clock.iso_utc(record.graded_at),
+        }
+        for record, name in rows
+    ]
+
+
+def exam_report(session: Session, class_id: int, paper_id: int, viewer: User) -> dict:
+    paper = session.get(Paper, paper_id)
+    if paper is None:
+        raise ClassExamNotFound()
+    scope = _paper_scope(viewer)
+    if scope is not None:
+        allowed = session.scalar(select(Paper.id).where(Paper.id == paper_id, scope))
+        if allowed is None:
+            raise AccessDeniedError("只能看自己发布的卷子的结果")
     submission = _submission(session, class_id, paper_id)
-    title = session.scalar(select(Paper.title).where(Paper.id == paper_id))
     return {
         "paper_id": paper_id,
-        "paper_title": title,
+        "paper_title": paper.title,
         "submission": submission,
         "questions": _question_rows(session, class_id, paper_id),
         "unsubmitted": _unsubmitted(session, class_id, paper_id),
+        "students": _exam_students(session, class_id, paper_id),
     }

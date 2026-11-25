@@ -44,6 +44,7 @@ def test_practice_table_and_indexes_exist(tmp_path):
         "id",
         "student_id",
         "question_id",
+        "student_answer",
         "difficulty",
         "is_correct",
         "created_at",

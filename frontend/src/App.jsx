@@ -14,15 +14,15 @@ import StudentReview from './pages/student/Review.jsx'
 import Chat from './pages/student/Chat.jsx'
 
 // 路由守卫只管体验，真正的权限在服务端按身份再过滤一次
-function RequireAuth({ roles, children }) {
+function RequireAuth({ roles, children, wrongRoleTo }) {
   const location = useLocation()
   const auth = loadAuth()
   if (!auth) {
     return <Navigate to={`/login?from=${encodeURIComponent(location.pathname)}`} replace />
   }
   if (roles && !roles.includes(auth.user?.role)) {
-    // 学生误入老师页回自己的落地页，老师误入学生页同理
-    return <Navigate to={homeFor(auth.user?.role)} replace />
+    // 学生误入老师页回自己的落地页；老师误入学生页按路由回到班级报告等落点。
+    return <Navigate to={wrongRoleTo ?? homeFor(auth.user?.role)} replace />
   }
   return children
 }
@@ -81,7 +81,7 @@ export default function App() {
       <Route
         path="/student/exams"
         element={
-          <RequireAuth roles={['student']}>
+          <RequireAuth roles={['student']} wrongRoleTo="/teacher/class">
             <StudentExams />
           </RequireAuth>
         }
@@ -89,7 +89,7 @@ export default function App() {
       <Route
         path="/student/review"
         element={
-          <RequireAuth roles={['student']}>
+          <RequireAuth roles={['student']} wrongRoleTo="/teacher/class">
             <StudentReview />
           </RequireAuth>
         }
@@ -97,7 +97,7 @@ export default function App() {
       <Route
         path="/student/practice"
         element={
-          <RequireAuth roles={['student']}>
+          <RequireAuth roles={['student']} wrongRoleTo="/teacher/class">
             <StudentPractice />
           </RequireAuth>
         }
@@ -105,7 +105,7 @@ export default function App() {
       <Route
         path="/student/report"
         element={
-          <RequireAuth roles={['student']}>
+          <RequireAuth roles={['student']} wrongRoleTo="/teacher/class">
             <StudentReport />
           </RequireAuth>
         }

@@ -282,19 +282,25 @@ export const deleteQuestion = (id) => request(`/questions/${id}`, { method: 'DEL
 
 // ---- 考试：老师组卷与发布 ----
 
-export const listPapers = () => request('/papers')
+export const listPapers = ({ page = 1, pageSize = 20 } = {}) =>
+  request(`/papers?page=${encodeURIComponent(page)}&page_size=${encodeURIComponent(pageSize)}`)
 
 export const createPaper = (title) =>
   request('/papers', { method: 'POST', body: JSON.stringify({ title }) })
 
 export const getPaper = (id) => request(`/papers/${id}`)
 
-export const listQuestionPool = ({ difficulty, q } = {}) => {
+export const getPaperPreview = (id) => request(`/papers/${id}/preview`)
+
+export const listPaperClasses = (id) => request(`/papers/${id}/classes`)
+
+export const listQuestionPool = ({ difficulty, q, page = 1, pageSize = 20 } = {}) => {
   const params = new URLSearchParams()
   if (difficulty) params.set('difficulty', difficulty)
   if (q) params.set('q', q)
-  const query = params.toString()
-  return request(`/papers/pool${query ? `?${query}` : ''}`)
+  params.set('page', page)
+  params.set('page_size', pageSize)
+  return request(`/papers/pool?${params.toString()}`)
 }
 
 export const listClasses = () => request('/classes')
@@ -316,7 +322,8 @@ export const publishPaper = (paperId, classId) =>
 
 // ---- 考试：学生作答 ----
 
-export const listAttempts = () => request('/attempts')
+export const listAttempts = ({ page = 1, pageSize = 20 } = {}) =>
+  request(`/attempts?page=${encodeURIComponent(page)}&page_size=${encodeURIComponent(pageSize)}`)
 
 export const getAttempt = (id) => request(`/attempts/${id}`)
 
@@ -331,20 +338,36 @@ export const submitAttempt = (id, answers) =>
 export const retryGrading = (id) =>
   request(`/attempts/${id}/retry-grading`, { method: 'POST' })
 
-export const listWrongQuestions = () => request('/wrong-questions')
+export const listWrongQuestions = ({
+  source,
+  classId,
+  studentId,
+  inQueue,
+  page = 1,
+  pageSize = 20,
+} = {}) => {
+  const params = new URLSearchParams()
+  if (source) params.set('source', source)
+  if (classId != null) params.set('class_id', classId)
+  if (studentId != null) params.set('student_id', studentId)
+  if (inQueue != null) params.set('in_queue', inQueue ? 'true' : 'false')
+  params.set('page', page)
+  params.set('page_size', pageSize)
+  return request(`/wrong-questions?${params.toString()}`)
+}
 
 // ---- 复习与报告 ----
 
-export const listReviewTasks = (scope = 'due') =>
-  request(`/review/tasks?scope=${encodeURIComponent(scope)}`)
+export const listReviewTasks = (scope = 'due', { page = 1, pageSize = 20 } = {}) =>
+  request(
+    `/review/tasks?scope=${encodeURIComponent(scope)}&page=${encodeURIComponent(page)}&page_size=${encodeURIComponent(pageSize)}`,
+  )
 
 export const answerReviewTask = (id, studentAnswer) =>
   request(`/review/tasks/${id}/answer`, {
     method: 'POST',
     body: JSON.stringify({ student_answer: studentAnswer }),
   })
-
-export const getWeakReport = () => request('/reports/weak')
 
 export const getMyReport = () => request('/reports/me')
 
@@ -360,6 +383,23 @@ export const getClassExamReport = (classId, paperId) =>
 // ---- 知识点：两层树、建/改/合并 ----
 
 export const listKnowledgePoints = () => request('/knowledge-points')
+
+export const getKnowledgePointQuestions = (pointId, { page = 1, pageSize = 20 } = {}) =>
+  request(
+    `/knowledge-points/${pointId}/questions?page=${encodeURIComponent(page)}&page_size=${encodeURIComponent(pageSize)}`,
+  )
+
+export const setQuestionKnowledgePoints = (questionId, pointIds, primaryPointId = null) =>
+  request(`/questions/${questionId}/knowledge-points`, {
+    method: 'PUT',
+    body: JSON.stringify({
+      knowledge_point_ids: pointIds,
+      primary_point_id: primaryPointId,
+    }),
+  })
+
+export const getQuestionKnowledgePoints = (questionId) =>
+  request(`/questions/${questionId}/knowledge-points`)
 
 export const createKnowledgePoint = ({ name, parentId = null, aliases = [] }) =>
   request('/knowledge-points', {

@@ -5,6 +5,7 @@ token 的 payload 只带 sub 和 type，不带 role——角色与归属一律�
 """
 import logging
 import os
+import secrets
 from datetime import datetime, timedelta, timezone
 
 import jwt
@@ -13,31 +14,62 @@ from pwdlib import PasswordHash
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app import config
 from app.models import Class, User
 
 ACCESS_MINUTES = 15
 REFRESH_DAYS = 14
 ALGORITHM = "HS256"
 SECRET_ENV = "CHEMAI_JWT_SECRET"
-_LOCAL_DEFAULT_SECRET = "chemai-local-dev-secret"
+_DEV_SECRET_FILE = config.BACKEND_DIR / ".jwt-secret"
 
 _warned_about_secret = False
+_dev_secret: str | None = None
 
 password_hasher = PasswordHash.recommended()
 
 
-def jwt_secret() -> str:
-    """密钥取环境变量；用本地默认值时警告一次，提醒部署者配置。"""
-    global _warned_about_secret
-    secret = os.environ.get(SECRET_ENV)
-    if secret:
-        return secret
+def _local_dev_secret() -> str:
+    """开发环境没有配置密钥时，生成一次并持久化到本地忽略文件。
+
+    生产环境没有密钥必须直接失败，不能沿用任何固定值。
+    """
+    global _dev_secret, _warned_about_secret
+    if _dev_secret:
+        return _dev_secret
+    try:
+        value = _DEV_SECRET_FILE.read_text(encoding="utf-8").strip()
+        if value:
+            _dev_secret = value
+            return value
+    except OSError:
+        pass
+
+    value = secrets.token_urlsafe(48)
+    try:
+        _DEV_SECRET_FILE.write_text(value, encoding="utf-8")
+    except OSError:
+        # 文件系统只读时仍可用进程内随机密钥，至少不是公开固定值。
+        pass
+    _dev_secret = value
     if not _warned_about_secret:
         _warned_about_secret = True
         logging.getLogger("chemai").warning(
-            "未设置 %s，正在使用本地默认密钥；对外部署前必须配置", SECRET_ENV
+            "未设置 %s，已生成本地开发密钥并保存到 %s；生产环境必须显式配置",
+            SECRET_ENV,
+            _DEV_SECRET_FILE,
         )
-    return _LOCAL_DEFAULT_SECRET
+    return value
+
+
+def jwt_secret() -> str:
+    """密钥只从环境变量取；开发环境可自动生成，生产环境缺配置直接失败。"""
+    secret = os.environ.get(SECRET_ENV)
+    if secret:
+        return secret
+    if config.is_prod():
+        raise RuntimeError(f"生产环境必须设置 {SECRET_ENV}")
+    return _local_dev_secret()
 
 
 def hash_password(password: str) -> str:
@@ -115,6 +147,8 @@ def get_current_user(request: Request, session: Session = Depends(get_session)) 
     user = session.scalar(select(User).where(User.username == username))
     if user is None:
         raise AuthRequiredError(message)
+    if user.status != "active":
+        raise AuthRequiredError("账号已停用，请联系管理员")
     return user
 
 

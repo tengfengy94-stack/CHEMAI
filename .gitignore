@@ -27,6 +27,7 @@ eval-smoke-report.json
 .env
 .env.*
 !.env.example
+.jwt-secret
 *.pem
 *.key
 

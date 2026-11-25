@@ -455,3 +455,63 @@ def test_concurrent_add_questions_get_unique_positions(client, make_user):
     assert all(r.status_code == 200 for r in responses), [r.text for r in responses]
     detail = client.get(f"/api/papers/{paper['id']}", headers=auth(t1)).json()["data"]
     assert sorted(item["position"] for item in detail["questions"]) == [1, 2]
+
+
+def test_preview_hides_answers_and_lists_published_classes(
+    client, classroom, make_user
+):
+    t1 = login(client, "t1")
+    q = make_approved(client, t1)
+    paper = create_paper(client, t1)
+    add_question(client, t1, paper["id"], q["id"])
+
+    preview = client.get(f"/api/papers/{paper['id']}/preview", headers=auth(t1))
+    assert preview.status_code == 200, preview.text
+    preview_data = preview.json()["data"]
+    assert preview_data["questions"][0]["position"] == 1
+    assert preview_data["questions"][0]["stem"] == q["stem"]
+    assert "answer" not in preview_data["questions"][0]
+    assert "explanation" not in preview_data["questions"][0]
+
+    make_user("t2", role="teacher")
+    t2 = login(client, "t2")
+    assert client.get(f"/api/papers/{paper['id']}/preview", headers=auth(t2)).status_code == 403
+
+    assert client.get(f"/api/papers/{paper['id']}/classes", headers=auth(t1)).json()[
+        "data"
+    ]["items"] == []
+    assert publish(client, t1, paper["id"], classroom).status_code == 200
+    classes = client.get(f"/api/papers/{paper['id']}/classes", headers=auth(t1))
+    assert classes.status_code == 200, classes.text
+    items = classes.json()["data"]["items"]
+    assert len(items) == 1
+    assert items[0]["class_id"] == classroom
+    assert items[0]["student_count"] == 2
+
+
+def test_papers_and_pool_pagination_metadata(client, make_user):
+    make_user("t1", role="teacher")
+    make_user("admin", role="admin")
+    t1 = login(client, "t1")
+    create_paper(client, t1, "卷子一")
+    create_paper(client, t1, "卷子二")
+    make_approved(client, t1, stem="题一")
+    make_approved(client, t1, stem="题二")
+
+    papers = client.get("/api/papers?page=1&page_size=1", headers=auth(t1))
+    assert papers.status_code == 200, papers.text
+    paper_data = papers.json()["data"]
+    assert paper_data["total"] == 2
+    assert len(paper_data["items"]) == 1
+
+    pool = client.get("/api/papers/pool?page=2&page_size=1", headers=auth(t1))
+    assert pool.status_code == 200, pool.text
+    pool_data = pool.json()["data"]
+    assert pool_data["total"] == 2
+    assert pool_data["page"] == 2
+    assert len(pool_data["items"]) == 1
+
+    admin = login(client, "admin")
+    all_papers = client.get("/api/papers?page_size=1", headers=auth(admin))
+    assert all_papers.status_code == 200, all_papers.text
+    assert all_papers.json()["data"]["total"] == 2

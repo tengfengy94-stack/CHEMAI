@@ -3,11 +3,12 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta, timezone
 
 import pytest
+from sqlalchemy import select
 
 import app.events as events
-from app import clock
+from app import clock, review
 from app.db import make_engine, make_session_factory
-from app.models import ReviewTask
+from app.models import ReviewTask, User
 from exam_helpers import (
     BLANK_QUESTION,
     MULTIPLE_QUESTION,
@@ -330,7 +331,11 @@ def test_review_answer_does_not_touch_exam_or_wrong_list(client, classroom, fixe
     after_wrong = wrong_questions(client, s1)
     assert after_attempt["score"] == before_attempt["score"]
     assert after_attempt["questions"] == before_attempt["questions"]
-    assert after_wrong == before_wrong
+    # wrong 列表本身不因复习作答改变；task 的级别/到期日会变，比较时排除。
+    core = lambda items: [  # noqa: E731 - 测试内小工具
+        {key: value for key, value in item.items() if key != "task"} for item in items
+    ]
+    assert core(after_wrong) == core(before_wrong)
 
 
 def test_concurrent_answers_only_one_succeeds(client, classroom, fixed_clock):
@@ -388,3 +393,41 @@ def test_enqueue_failure_rolls_back_grading_then_retry_succeeds(
     assert retried.status_code == 200, retried.text
     assert retried.json()["data"]["status"] == "graded"
     assert len(task_list(client, s1)) == 1
+
+
+def test_delete_question_with_manual_review_task_is_blocked(client, classroom):
+    t1 = login(client, "t1")
+    question = make_approved(client, t1, **QUESTION)
+    with client.app.state.session_factory() as session:
+        student_id = session.scalar(select(User.id).where(User.username == "s1"))
+        review.add_manual_task(session, student_id, question["id"])
+
+    deleted = client.delete(f"/api/questions/{question['id']}", headers=auth(t1))
+    assert deleted.status_code == 409, deleted.text
+    assert "复习" in deleted.json()["error"]
+    still_there = client.get("/api/questions", headers=auth(t1)).json()["data"]["items"]
+    assert any(item["id"] == question["id"] for item in still_there)
+
+
+def test_review_tasks_pagination_metadata(client, classroom):
+    t1 = login(client, "t1")
+    s1 = login(client, "s1")
+    q1 = make_approved(client, t1, **{**QUESTION, "stem": "错题一", "answer": "A"})
+    q2 = make_approved(client, t1, **{**QUESTION, "stem": "错题二", "answer": "A"})
+    paper = paper_with(client, t1, classroom, [q1, q2], "两错题卷")
+    attempt = attempt_for_paper(client, s1, paper["id"])
+    submit_answers(client, s1, attempt, {q1["id"]: "B", q2["id"]: "C"})
+
+    first = client.get(
+        "/api/review/tasks?scope=all&page=1&page_size=1", headers=auth(s1)
+    )
+    assert first.status_code == 200, first.text
+    data = first.json()["data"]
+    assert data["total"] == 2
+    assert len(data["items"]) == 1
+    second = client.get(
+        "/api/review/tasks?scope=all&page=2&page_size=1", headers=auth(s1)
+    )
+    assert second.status_code == 200, second.text
+    assert len(second.json()["data"]["items"]) == 1
+    assert second.json()["data"]["items"][0]["id"] != data["items"][0]["id"]

@@ -132,13 +132,7 @@ def get_task(session: Session, task_id: int) -> ReviewTask:
     return task
 
 
-def list_tasks(
-    session: Session,
-    *,
-    scope: str,
-    student_id: int | None = None,
-):
-    """到期列表或全部任务；学生传自己的 student_id，管理员不传。"""
+def _task_query(scope: str, student_id: int | None):
     stmt = (
         select(ReviewTask, Question, User)
         .join(Question, Question.id == ReviewTask.question_id)
@@ -149,13 +143,41 @@ def list_tasks(
     if scope == "due":
         day = clock.business_today()
         stmt = stmt.where(*_due_conditions(day))
+    return stmt
+
+
+def list_tasks(
+    session: Session,
+    *,
+    scope: str,
+    student_id: int | None = None,
+    limit: int | None = None,
+    offset: int = 0,
+):
+    """到期列表或全部任务；学生传自己的 student_id，管理员不传。"""
     # 已出队的任务 due_on 为空，排在最后
-    stmt = stmt.order_by(
+    stmt = _task_query(scope, student_id).order_by(
         case((ReviewTask.due_on.is_(None), 1), else_=0),
         ReviewTask.due_on,
         ReviewTask.id,
     )
+    if offset:
+        stmt = stmt.offset(offset)
+    if limit is not None:
+        stmt = stmt.limit(limit)
     return session.execute(stmt).all()
+
+
+def count_tasks(
+    session: Session,
+    *,
+    scope: str,
+    student_id: int | None = None,
+) -> int:
+    stmt = _task_query(scope, student_id)
+    return (
+        session.scalar(select(func.count()).select_from(stmt.subquery())) or 0
+    )
 
 
 def _due_conditions(day):

@@ -14,6 +14,7 @@ from app.answers import judge_answer, score_for
 from app.attempts import (
     AttemptNotFound,
     GRADING_LEASE_SECONDS,
+    WRONG_SOURCES,
     attempt_detail,
     get_attempt_record,
     grading_in_progress,
@@ -27,6 +28,7 @@ from app.auth import (
     dummy_verify,
     get_current_user,
     get_session,
+    require_own_class,
     require_owner,
     verify_password,
 )
@@ -41,12 +43,12 @@ from app.models import (
     PracticeRecord,
     Question,
     QuestionKnowledgePoint,
+    ReviewTask,
     User,
     utcnow,
 )
 from app.schemas import (
     DIFFICULTIES,
-    AnswerInput,
     AttemptSubmit,
     LoginRequest,
     PaperCreate,
@@ -57,6 +59,7 @@ from app.schemas import (
     QuestionValidationError,
     attempt_to_dict,
     paper_question_to_dict,
+    paper_preview_question_to_dict,
     paper_to_dict,
     question_pool_to_dict,
     question_to_dict,
@@ -106,7 +109,6 @@ def papers_using_question(session: Session, question_id: int) -> int:
 # ---- 考试：卷子、作答记录 ----
 
 PAPER_STATUSES = ("draft", "published")
-ATTEMPT_STATUSES = ("pending", "in_progress", "submitted", "graded")
 
 
 class PaperNotFound(Exception):
@@ -215,6 +217,50 @@ def _retry_state_error(record: AnswerRecord):
     return fail("当前状态不能重试判分", 400)
 
 
+def _claim_regrade(session: Session, record: AnswerRecord) -> bool:
+    """抢占“已交卷 + 空分”的判分租约；抢不到说明别的请求在判或已经判完。"""
+    now = utcnow()
+    cutoff = now - timedelta(seconds=GRADING_LEASE_SECONDS)
+    claimed = session.execute(
+        update(AnswerRecord)
+        .where(
+            AnswerRecord.id == record.id,
+            AnswerRecord.status == "submitted",
+            AnswerRecord.score.is_(None),
+            or_(
+                AnswerRecord.grading_started_at.is_(None),
+                AnswerRecord.grading_started_at < cutoff,
+            ),
+        )
+        .values(grading_started_at=now)
+        .execution_options(synchronize_session=False)
+    )
+    session.commit()
+    if claimed.rowcount == 0:
+        return False
+    session.refresh(record)
+    return True
+
+
+def _grade_after_claim(session: Session, record: AnswerRecord) -> AnswerRecord:
+    """租约已到手后重跑判分；失败只清租约，保留 submitted + 空分。"""
+    try:
+        grade_record(session, record)
+    except Exception:
+        session.rollback()
+        try:
+            session.execute(
+                update(AnswerRecord)
+                .where(AnswerRecord.id == record.id)
+                .values(grading_started_at=None)
+            )
+            session.commit()
+        except Exception:
+            session.rollback()
+    session.refresh(record)
+    return record
+
+
 def identity_dict(user: User, session: Session) -> dict:
     """给前端展示的身份信息；权限判断不用它，以查库的 User 为准。"""
     data = {"username": user.username, "name": user.name, "role": user.role}
@@ -240,6 +286,8 @@ def login(body: LoginRequest, session: Session = Depends(get_session)):
         return fail(WRONG_CREDENTIALS, 401)
     if not verify_password(body.password, user.password_hash):
         return fail(WRONG_CREDENTIALS, 401)
+    if user.status != "active":
+        return fail("账号已停用，请联系管理员", 403)
     return ok({
         "access_token": create_token(user.username, "access"),
         "refresh_token": create_token(user.username, "refresh"),
@@ -262,6 +310,8 @@ def refresh(request: Request, session: Session = Depends(get_session)):
     user = session.scalar(select(User).where(User.username == username)) if username else None
     if user is None:
         return fail("登录已过期，请重新登录", 401)
+    if user.status != "active":
+        return fail("账号已停用，请联系管理员", 403)
     return ok({
         "access_token": create_token(user.username, "access"),
         "user": identity_dict(user, session),
@@ -413,6 +463,14 @@ def delete_question(
     if practice_count:
         return fail("这道题已被学生练习过，不能删除", 409)
 
+    review_count = session.scalar(
+        select(func.count())
+        .select_from(ReviewTask)
+        .where(ReviewTask.question_id == question_id)
+    )
+    if review_count:
+        return fail("这道题已在学生的复习任务里，不能删除", 409)
+
     # 知识点关联属于复习模块的数据，但题目删除必须先把外键清掉
     session.execute(
         delete(QuestionKnowledgePoint).where(
@@ -443,7 +501,11 @@ def list_classes(
         counts = dict(
             session.execute(
                 select(User.class_id, func.count())
-                .where(User.role == "student", User.class_id.in_(ids))
+                .where(
+                    User.role == "student",
+                    User.status == "active",
+                    User.class_id.in_(ids),
+                )
                 .group_by(User.class_id)
             ).all()
         )
@@ -463,19 +525,39 @@ def list_classes(
 
 @router.get("/papers")
 def list_papers(
+    page: int = 1,
+    page_size: int = PAGE_SIZE,
     user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ):
     require_paper_manager(user)
-    stmt = select(Paper, func.count(PaperQuestion.id)).outerjoin(
+    if page < 1 or page_size < 1:
+        return fail("页码不对", 422)
+    page_size = min(page_size, 100)
+    conditions = [Paper.created_by == user.username] if user.role == "teacher" else []
+    base = select(Paper, func.count(PaperQuestion.id)).outerjoin(
         PaperQuestion, PaperQuestion.paper_id == Paper.id
     )
-    if user.role == "teacher":
-        stmt = stmt.where(Paper.created_by == user.username)
+    if conditions:
+        base = base.where(*conditions)
+    total = session.scalar(
+        select(func.count())
+        .select_from(select(Paper.id).where(*conditions).subquery())
+    ) or 0
     rows = session.execute(
-        stmt.group_by(Paper.id).order_by(Paper.created_at.desc(), Paper.id.asc())
+        base.group_by(Paper.id)
+        .order_by(Paper.created_at.desc(), Paper.id.asc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
     ).all()
-    return ok({"items": [paper_to_dict(paper, count) for paper, count in rows]})
+    return ok(
+        {
+            "items": [paper_to_dict(paper, count) for paper, count in rows],
+            "total": int(total),
+            "page": page,
+            "page_size": page_size,
+        }
+    )
 
 
 @router.post("/papers")
@@ -502,6 +584,8 @@ def create_paper(
 def paper_question_pool(
     difficulty: int | None = None,
     q: str | None = None,
+    page: int = 1,
+    page_size: int = PAGE_SIZE,
     user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ):
@@ -509,6 +593,9 @@ def paper_question_pool(
     require_paper_manager(user)
     if difficulty is not None and difficulty not in DIFFICULTIES:
         return fail("难度只能是 1、2、3", 422)
+    if page < 1 or page_size < 1:
+        return fail("页码不对", 422)
+    page_size = min(page_size, 100)
 
     conditions = [Question.status == "approved"]
     if user.role == "teacher":
@@ -519,12 +606,25 @@ def paper_question_pool(
     if keyword:
         conditions.append(Question.stem.contains(keyword))
 
+    total = session.scalar(
+        select(func.count())
+        .select_from(select(Question.id).where(*conditions).subquery())
+    ) or 0
     rows = session.scalars(
         select(Question)
         .where(*conditions)
         .order_by(Question.created_at.desc(), Question.id.asc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
     ).all()
-    return ok({"items": [question_pool_to_dict(question) for question in rows]})
+    return ok(
+        {
+            "items": [question_pool_to_dict(question) for question in rows],
+            "total": int(total),
+            "page": page,
+            "page_size": page_size,
+        }
+    )
 
 
 @router.get("/papers/{paper_id}")
@@ -538,6 +638,64 @@ def get_paper(
     return ok(_paper_detail(session, paper))
 
 
+@router.get("/papers/{paper_id}/preview")
+def preview_paper(
+    paper_id: int,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    """学生视角预览：题号、题干、选项，不带答案与解析。"""
+    require_paper_manager(user)
+    paper = get_owned_paper(paper_id, user, session)
+    rows = session.execute(
+        select(PaperQuestion, Question)
+        .join(Question, Question.id == PaperQuestion.question_id)
+        .where(PaperQuestion.paper_id == paper.id)
+        .order_by(PaperQuestion.position, PaperQuestion.id)
+    ).all()
+    data = paper_to_dict(paper, len(rows))
+    data["questions"] = [
+        paper_preview_question_to_dict(pq, question) for pq, question in rows
+    ]
+    return ok(data)
+
+
+@router.get("/papers/{paper_id}/classes")
+def paper_result_classes(
+    paper_id: int,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    """这份卷子发过的班级及作答人数，用于已发布卷子的“看结果”入口。"""
+    require_paper_manager(user)
+    paper = get_owned_paper(paper_id, user, session)
+    rows = session.execute(
+        select(
+            AnswerRecord.class_id,
+            Class.name.label("class_name"),
+            func.count(AnswerRecord.id).label("student_count"),
+            func.min(AnswerRecord.created_at).label("published_at"),
+        )
+        .join(Class, Class.id == AnswerRecord.class_id)
+        .where(AnswerRecord.paper_id == paper.id)
+        .group_by(AnswerRecord.class_id, Class.name)
+        .order_by(func.min(AnswerRecord.created_at), AnswerRecord.class_id)
+    ).all()
+    return ok(
+        {
+            "items": [
+                {
+                    "class_id": row.class_id,
+                    "class_name": row.class_name,
+                    "student_count": int(row.student_count),
+                    "published_at": clock.iso_utc(row.published_at),
+                }
+                for row in rows
+            ]
+        }
+    )
+
+
 @router.post("/papers/{paper_id}/questions")
 def add_paper_question(
     paper_id: int,
@@ -548,7 +706,7 @@ def add_paper_question(
     require_paper_manager(user)
     paper = get_owned_paper(paper_id, user, session)
     if paper.status != "draft":
-        return fail("已发布的卷子不能修改", 400)
+        return fail("已发布的卷子不能修改，要改请新建一份", 400)
 
     question = session.get(Question, body.question_id)
     if question is None:
@@ -582,7 +740,7 @@ def add_paper_question(
     if not added:
         session.refresh(paper)
         if paper.status != "draft":
-            return fail("已发布的卷子不能修改", 400)
+            return fail("已发布的卷子不能修改，要改请新建一份", 400)
     return ok({"added": added, "paper": _paper_detail(session, paper)})
 
 
@@ -596,7 +754,7 @@ def remove_paper_question(
     require_paper_manager(user)
     paper = get_owned_paper(paper_id, user, session)
     if paper.status != "draft":
-        return fail("已发布的卷子不能修改", 400)
+        return fail("已发布的卷子不能修改，要改请新建一份", 400)
 
     result = session.execute(
         text(
@@ -616,7 +774,7 @@ def remove_paper_question(
     if not removed:
         session.refresh(paper)
         if paper.status != "draft":
-            return fail("已发布的卷子不能修改", 400)
+            return fail("已发布的卷子不能修改，要改请新建一份", 400)
         return fail("卷子里没有这道题", 404)
     return ok({"removed": question_id, "paper": _paper_detail(session, paper)})
 
@@ -664,14 +822,18 @@ def publish_paper(
     )
     if question_count == 0:
         session.rollback()
-        return fail("卷子里还没有题", 400)
+        return fail("卷子里还没有题，先加题再发布", 400)
 
     students = session.scalars(
-        select(User).where(User.role == "student", User.class_id == klass.id)
+        select(User).where(
+            User.role == "student",
+            User.status == "active",
+            User.class_id == klass.id,
+        )
     ).all()
     if not students:
         session.rollback()
-        return fail("该班还没有学生", 400)
+        return fail("该班还没有学生，先加学生再发布", 400)
 
     now = utcnow()
     stmt = (
@@ -706,9 +868,14 @@ def publish_paper(
 
 @router.get("/attempts")
 def list_attempts(
+    page: int = 1,
+    page_size: int = PAGE_SIZE,
     user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ):
+    if page < 1 or page_size < 1:
+        return fail("页码不对", 422)
+    page_size = min(page_size, 100)
     if user.role == "student":
         condition = AnswerRecord.student_id == user.id
     elif user.role == "admin":
@@ -719,28 +886,111 @@ def list_attempts(
     stmt = select(AnswerRecord, Paper.title).join(Paper, Paper.id == AnswerRecord.paper_id)
     if condition is not None:
         stmt = stmt.where(condition)
+    total = session.scalar(select(func.count()).select_from(stmt.subquery())) or 0
     rows = session.execute(
         stmt.order_by(AnswerRecord.created_at.desc(), AnswerRecord.id.asc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
     ).all()
     return ok(
         {
             "items": [
                 attempt_to_dict(record, title, grading_in_progress(record))
                 for record, title in rows
-            ]
+            ],
+            "total": int(total),
+            "page": page,
+            "page_size": page_size,
         }
     )
 
 
 @router.get("/wrong-questions")
 def list_wrong_questions(
+    source: str | None = None,
+    class_id: int | None = None,
+    student_id: int | None = None,
+    in_queue: bool | None = None,
+    page: int = 1,
+    page_size: int = PAGE_SIZE,
     user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ):
-    if user.role not in ("student", "admin"):
-        raise AccessDeniedError("只有学生可以查看自己的错题，管理员可以查看全部")
-    rows = session.execute(wrong_questions_query(user)).mappings().all()
-    return ok({"items": [wrong_question_to_dict(row) for row in rows]})
+    source = source or None
+    if source is not None and source not in WRONG_SOURCES:
+        return fail("错题来源只能是考试、练习或复习", 422)
+    if in_queue is not None and user.role != "student":
+        return fail("只有学生可以按复习队列筛选", 422)
+    if page < 1 or page_size < 1:
+        return fail("页码不对", 422)
+    page_size = min(page_size, 100)
+
+    if user.role == "student":
+        if class_id is not None:
+            raise AccessDeniedError("学生不能按班级查看错题")
+        if student_id is not None and student_id != user.id:
+            raise AccessDeniedError("只能看自己的错题")
+        target_class = None
+        target_student = user.id
+    elif user.role == "teacher":
+        if class_id is None:
+            return fail("请先选择班级", 422)
+        require_own_class(class_id, user, session)
+        target_class = class_id
+        target_student = student_id
+    elif user.role == "admin":
+        target_class = class_id
+        target_student = student_id
+    else:
+        raise AccessDeniedError("当前身份不能查看错题")
+
+    query = wrong_questions_query(
+        user,
+        source=source,
+        class_id=target_class,
+        student_id=target_student,
+        in_queue=in_queue,
+    )
+    total = session.scalar(select(func.count()).select_from(query.subquery())) or 0
+    rows = session.execute(
+        query.offset((page - 1) * page_size).limit(page_size)
+    ).mappings().all()
+
+    task_map = {}
+    if user.role == "student" and rows:
+        question_ids = [row.question_id for row in rows]
+        tasks = session.scalars(
+            select(ReviewTask).where(
+                ReviewTask.student_id == user.id,
+                ReviewTask.question_id.in_(question_ids),
+            )
+        ).all()
+        task_map = {task.question_id: task for task in tasks}
+
+    items = []
+    for row in rows:
+        item = wrong_question_to_dict(row)
+        task = task_map.get(item["question_id"]) if user.role == "student" else None
+        item["task"] = (
+            None
+            if task is None
+            else {
+                "id": task.id,
+                "level": task.level,
+                "in_queue": task.level < 5,
+                "due_on": task.due_on.isoformat() if task.due_on else None,
+                "review_count": task.review_count,
+            }
+        )
+        items.append(item)
+    return ok(
+        {
+            "items": items,
+            "total": int(total),
+            "page": page,
+            "page_size": page_size,
+        }
+    )
 
 
 @router.get("/attempts/{attempt_id}")
@@ -750,7 +1000,7 @@ def get_attempt(
     session: Session = Depends(get_session),
 ):
     record = get_attempt_record(attempt_id, session)
-    require_attempt_reader(record, user)
+    require_attempt_reader(session, record, user)
     return ok(attempt_detail(session, record))
 
 
@@ -793,6 +1043,14 @@ def submit_attempt(
 ):
     record = get_attempt_record(attempt_id, session)
     require_attempt_owner(record, user)
+    if record.status == "submitted" and record.score is None:
+        # 判分失败后的再次提交：不重收答案，只重判。
+        if not _claim_regrade(session, record):
+            session.refresh(record)
+            if record.status == "graded":
+                return fail("分数已经定了，不能再交卷", 400)
+            return fail("判分正在进行，请稍后再试", 400)
+        return ok(attempt_detail(session, _grade_after_claim(session, record)))
     if record.status != "in_progress":
         return _submit_state_error(record)
 
@@ -876,45 +1134,10 @@ def retry_grading(
     if record.status != "submitted" or record.score is not None:
         return _retry_state_error(record)
 
-    now = utcnow()
-    cutoff = now - timedelta(seconds=GRADING_LEASE_SECONDS)
-    claimed = session.execute(
-        update(AnswerRecord)
-        .where(
-            AnswerRecord.id == record.id,
-            AnswerRecord.status == "submitted",
-            AnswerRecord.score.is_(None),
-            or_(
-                AnswerRecord.grading_started_at.is_(None),
-                AnswerRecord.grading_started_at < cutoff,
-            ),
-        )
-        .values(grading_started_at=now)
-        .execution_options(synchronize_session=False)
-    )
-    session.commit()
-    if claimed.rowcount == 0:
+    if not _claim_regrade(session, record):
         session.refresh(record)
         if record.status == "graded":
             return fail("分数已经定了，不能重试判分", 400)
         return fail("判分正在进行，请稍后再试", 400)
 
-    session.refresh(record)
-    try:
-        grade_record(session, record)
-    except Exception:
-        session.rollback()
-        try:
-            session.execute(
-                update(AnswerRecord)
-                .where(AnswerRecord.id == record.id)
-                .values(grading_started_at=None)
-            )
-            session.commit()
-        except Exception:
-            session.rollback()
-        session.refresh(record)
-        return ok(attempt_detail(session, record))
-
-    session.refresh(record)
-    return ok(attempt_detail(session, record))
+    return ok(attempt_detail(session, _grade_after_claim(session, record)))

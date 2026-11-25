@@ -80,7 +80,7 @@ function ScoreChart({ scores }) {
   }))
   return (
     <ResponsiveContainer width="100%" height={260}>
-      <LineChart data={data} margin={{ top: 8, right: 16, bottom: 8, left: 0 }}>
+      <LineChart data={data} margin={{ top: 8, right: 64, bottom: 8, left: 56 }}>
         <CartesianGrid strokeDasharray="3 3" />
         <XAxis dataKey="name" tick={{ fontSize: 12 }} />
         <YAxis domain={[0, 100]} tick={{ fontSize: 12 }} />

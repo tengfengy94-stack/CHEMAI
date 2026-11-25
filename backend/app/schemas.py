@@ -34,6 +34,7 @@ FIELD_LABELS = {
     "aliases": "别名",
     "target_id": "目标知识点",
     "knowledge_point_ids": "知识点",
+    "primary_point_id": "主知识点",
     "student_id": "学生",
     "message": "消息",
 }
@@ -140,6 +141,7 @@ class QuestionKnowledgePointsUpdate(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     knowledge_point_ids: list[StrictInt] = Field(default_factory=list)
+    primary_point_id: StrictInt | None = None
 
 
 def validate_new_question(body: QuestionCreate) -> dict:
@@ -223,6 +225,13 @@ def paper_question_to_dict(pq: PaperQuestion, q: Question) -> dict:
     return data
 
 
+def paper_preview_question_to_dict(pq: PaperQuestion, q: Question) -> dict:
+    """学生视角预览：题干、选项、题号，不带标准答案与解析。"""
+    data = question_to_public_dict(q)
+    data["position"] = pq.position
+    return data
+
+
 def question_pool_to_dict(q: Question) -> dict:
     """组卷题目池只给挑题需要的字段。"""
     return {
@@ -245,11 +254,12 @@ def wrong_question_to_dict(row) -> dict:
         "student_answer": row.student_answer,
         "answer": row.answer,
         "explanation": row.explanation,
-        "source": "exam",
+        "source": row.source,
+        "source_ref": row.source_ref,
         "paper_id": row.paper_id,
         "paper_title": row.paper_title,
-        "attempt_id": row.attempt_id,
-        "last_wrong_at": clock.iso_utc(row.submitted_at),
+        "attempt_id": row.source_ref if row.source == "exam" else None,
+        "last_wrong_at": clock.iso_utc(row.occurred_at),
     }
 
 

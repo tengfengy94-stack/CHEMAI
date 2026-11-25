@@ -28,9 +28,11 @@ export const ATTEMPT_STATUS = {
   graded: { label: '已判分', color: 'green' },
 }
 
-// 错题来源：设计/02 §4.8；本章只有考试，练习与复习在后面的章节产生
+// 错题来源：设计/02 §4.8（考试、练习、复习）
 export const WRONG_SOURCE_LABELS = {
   exam: '考试',
+  practice: '练习',
+  review: '复习',
 }
 
 // 登录后的落地页：老师和管理员进题库，学生进考试页（第 03 章是占位页）

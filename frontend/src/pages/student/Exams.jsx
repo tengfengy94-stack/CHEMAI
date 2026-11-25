@@ -46,6 +46,10 @@ export default function StudentExams() {
   const { message, modal } = AntApp.useApp()
   const [attempts, setAttempts] = useState([])
   const [loading, setLoading] = useState(true)
+  const [listError, setListError] = useState('')
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(20)
+  const [total, setTotal] = useState(0)
   const [mode, setMode] = useState('list')
   const [attempt, setAttempt] = useState(null)
   const [answers, setAnswers] = useState({})
@@ -56,49 +60,69 @@ export default function StudentExams() {
   const [wrongItems, setWrongItems] = useState([])
   const [wrongLoading, setWrongLoading] = useState(false)
   const [wrongError, setWrongError] = useState('')
+  const [wrongPage, setWrongPage] = useState(1)
+  const [wrongPageSize, setWrongPageSize] = useState(20)
+  const [wrongTotal, setWrongTotal] = useState(0)
 
   const fetchAttempts = useCallback(async () => {
     try {
-      const data = await listAttempts()
+      const data = await listAttempts({ page, pageSize })
       setAttempts(data.items)
+      setTotal(data.total)
+      setPageSize(data.page_size)
+      setListError('')
     } catch (error) {
-      message.error(error.message)
+      setListError(error.message)
     } finally {
       setLoading(false)
     }
-  }, [message])
+  }, [page, pageSize])
 
   const reloadAttempts = useCallback(async () => {
     setLoading(true)
+    setListError('')
     await fetchAttempts()
   }, [fetchAttempts])
 
-  const loadWrongQuestions = useCallback(async () => {
-    setWrongLoading(true)
-    setWrongError('')
-    try {
-      const data = await listWrongQuestions()
-      setWrongItems(data.items)
-    } catch (error) {
-      setWrongError(error.message)
-    } finally {
-      setWrongLoading(false)
-    }
-  }, [])
+  const loadWrongQuestions = useCallback(
+    async (page = 1) => {
+      setWrongLoading(true)
+      setWrongError('')
+      try {
+        const data = await listWrongQuestions({ page, pageSize: wrongPageSize })
+        setWrongItems(data.items)
+        setWrongTotal(data.total)
+        setWrongPageSize(data.page_size)
+        setWrongPage(page)
+      } catch (error) {
+        setWrongError(error.message)
+      } finally {
+        setWrongLoading(false)
+      }
+    },
+    [wrongPageSize],
+  )
 
   const openWrongQuestions = () => {
     setWrongOpen(true)
-    loadWrongQuestions()
+    setWrongPage(1)
+    loadWrongQuestions(1)
   }
 
   useEffect(() => {
     let cancelled = false
     async function load() {
+      setLoading(true)
       try {
-        const data = await listAttempts()
-        if (!cancelled) setAttempts(data.items)
+        const data = await listAttempts({ page, pageSize })
+        if (!cancelled) {
+          setAttempts(data.items)
+          setTotal(data.total)
+          setPageSize(data.page_size)
+          setListError('')
+        }
       } catch (error) {
-        if (!cancelled) message.error(error.message)
+        if (!cancelled) setListError(error.message)
       } finally {
         if (!cancelled) setLoading(false)
       }
@@ -107,7 +131,13 @@ export default function StudentExams() {
     return () => {
       cancelled = true
     }
-  }, [message])
+  }, [page, pageSize])
+
+  useEffect(() => {
+    if (!loading && attempts.length === 0 && total > 0 && page > 1) {
+      setPage(page - 1)
+    }
+  }, [loading, attempts.length, total, page])
 
   const openAttempt = async (id) => {
     try {
@@ -450,15 +480,41 @@ export default function StudentExams() {
             </Button>
           }
         >
+          {listError && (
+            <Alert
+              type="error"
+              showIcon
+              message="考试列表加载失败"
+              description="请稍后重试"
+              action={
+                <Button size="small" onClick={reloadAttempts}>
+                  重试
+                </Button>
+              }
+              style={{ marginBottom: 12 }}
+            />
+          )}
           <Table
             rowKey="id"
             size="small"
             loading={loading}
             columns={columns}
             dataSource={attempts}
-            pagination={false}
+            pagination={{
+              current: page,
+              pageSize,
+              total,
+              showSizeChanger: false,
+              onChange: setPage,
+            }}
             locale={{
-              emptyText: <Empty description="老师发布卷子后，这里会出现待作答记录" />,
+              emptyText: listError ? (
+                <Empty description="加载失败，请点重试" />
+              ) : (
+                <Empty description="老师发布卷子后，这里会出现待作答记录">
+                  <Button onClick={reloadAttempts}>刷新</Button>
+                </Empty>
+              ),
             }}
           />
         </Card>
@@ -501,7 +557,7 @@ export default function StudentExams() {
             message="错题加载失败"
             description={wrongError}
             action={
-              <Button size="small" onClick={loadWrongQuestions}>
+              <Button size="small" onClick={() => loadWrongQuestions(wrongPage)}>
                 重试
               </Button>
             }
@@ -511,6 +567,13 @@ export default function StudentExams() {
         ) : (
           <List
             dataSource={wrongItems}
+            pagination={{
+              current: wrongPage,
+              pageSize: wrongPageSize,
+              total: wrongTotal,
+              showSizeChanger: false,
+              onChange: loadWrongQuestions,
+            }}
             renderItem={(item) => (
               <List.Item style={{ display: 'block' }}>
                 <Flex justify="space-between" align="flex-start" gap={12}>
@@ -538,8 +601,9 @@ export default function StudentExams() {
                   解析：{item.explanation || '暂无解析'}
                 </Typography.Paragraph>
                 <Typography.Text type="secondary">
-                  来源：{WRONG_SOURCE_LABELS[item.source] ?? item.source} ·{' '}
-                  {item.paper_title} · 最近答错 {timeText(item.last_wrong_at)}
+                  来源：{WRONG_SOURCE_LABELS[item.source] ?? item.source}
+                  {item.paper_title ? ` · ${item.paper_title}` : ''} · 最近答错{' '}
+                  {timeText(item.last_wrong_at)}
                 </Typography.Text>
               </List.Item>
             )}

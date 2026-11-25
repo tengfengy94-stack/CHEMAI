@@ -23,7 +23,9 @@ import {
   createPaper,
   currentUser,
   getPaper,
+  getPaperPreview,
   listClasses,
+  listPaperClasses,
   listPapers,
   listQuestionPool,
   logout,
@@ -36,6 +38,8 @@ const statusTag = (status) => {
   const info = PAPER_STATUS[status]
   return info ? <Tag color={info.color}>{info.label}</Tag> : status
 }
+
+const optionLetter = (index) => String.fromCharCode(65 + index)
 
 const questionMeta = (question, withPosition = false) => (
   <Space size={4} wrap>
@@ -59,27 +63,51 @@ export default function TeacherExams() {
   const [loading, setLoading] = useState(true)
   const [detailLoading, setDetailLoading] = useState(false)
   const [poolLoading, setPoolLoading] = useState(false)
+  const [papersError, setPapersError] = useState('')
+  const [detailError, setDetailError] = useState('')
+  const [poolError, setPoolError] = useState('')
+  const [poolVersion, setPoolVersion] = useState(0)
+  const [papersPage, setPapersPage] = useState(1)
+  const [papersPageSize, setPapersPageSize] = useState(20)
+  const [papersTotal, setPapersTotal] = useState(0)
+  const [poolPage, setPoolPage] = useState(1)
+  const [poolPageSize, setPoolPageSize] = useState(20)
+  const [poolTotal, setPoolTotal] = useState(0)
   const [filters, setFilters] = useState({ difficulty: undefined, q: '' })
   const [createOpen, setCreateOpen] = useState(false)
   const [creating, setCreating] = useState(false)
   const [publishTarget, setPublishTarget] = useState(null)
   const [publishClassId, setPublishClassId] = useState(undefined)
   const [publishing, setPublishing] = useState(false)
+  const [previewOpen, setPreviewOpen] = useState(false)
+  const [preview, setPreview] = useState(null)
+  const [previewLoading, setPreviewLoading] = useState(false)
+  const [previewError, setPreviewError] = useState('')
+  const [resultOpen, setResultOpen] = useState(false)
+  const [resultPaper, setResultPaper] = useState(null)
+  const [resultClasses, setResultClasses] = useState([])
+  const [resultClassId, setResultClassId] = useState(undefined)
+  const [resultLoading, setResultLoading] = useState(false)
+  const [resultError, setResultError] = useState('')
   const [form] = Form.useForm()
 
   const fetchPapers = useCallback(async () => {
+    setLoading(true)
     try {
-      const data = await listPapers()
+      const data = await listPapers({ page: papersPage, pageSize: papersPageSize })
       setPapers(data.items)
+      setPapersTotal(data.total)
+      setPapersPageSize(data.page_size)
+      setPapersError('')
     } catch (error) {
-      message.error(error.message)
+      setPapersError(error.message)
     } finally {
       setLoading(false)
     }
-  }, [message])
+  }, [papersPage, papersPageSize])
 
   const reloadPapers = useCallback(async () => {
-    setLoading(true)
+    setPapersError('')
     await fetchPapers()
   }, [fetchPapers])
 
@@ -87,32 +115,22 @@ export default function TeacherExams() {
     async (paperId, quiet = false) => {
       if (!paperId) return
       if (!quiet) setDetailLoading(true)
+      setDetailError('')
       try {
         setDetail(await getPaper(paperId))
       } catch (error) {
-        message.error(error.message)
+        setDetailError(error.message)
       } finally {
         if (!quiet) setDetailLoading(false)
       }
     },
-    [message],
+    [],
   )
 
   const activeId = selectedId ?? papers[0]?.id ?? null
 
   useEffect(() => {
     let cancelled = false
-    async function load() {
-      try {
-        const data = await listPapers()
-        if (!cancelled) setPapers(data.items)
-      } catch (error) {
-        if (!cancelled) message.error(error.message)
-      } finally {
-        if (!cancelled) setLoading(false)
-      }
-    }
-    load()
     listClasses()
       .then((data) => {
         if (!cancelled) setClasses(data.items)
@@ -126,14 +144,19 @@ export default function TeacherExams() {
   }, [message])
 
   useEffect(() => {
+    fetchPapers()
+  }, [fetchPapers])
+
+  useEffect(() => {
     let cancelled = false
     async function load() {
       if (!activeId) return
+      setDetailError('')
       try {
         const data = await getPaper(activeId)
         if (!cancelled) setDetail(data)
       } catch (error) {
-        if (!cancelled) message.error(error.message)
+        if (!cancelled) setDetailError(error.message)
       } finally {
         if (!cancelled) setDetailLoading(false)
       }
@@ -142,16 +165,26 @@ export default function TeacherExams() {
     return () => {
       cancelled = true
     }
-  }, [activeId, message])
+  }, [activeId])
 
   useEffect(() => {
     let cancelled = false
     async function load() {
+      setPoolLoading(true)
+      setPoolError('')
       try {
-        const data = await listQuestionPool(filters)
-        if (!cancelled) setPool(data.items)
+        const data = await listQuestionPool({
+          ...filters,
+          page: poolPage,
+          pageSize: poolPageSize,
+        })
+        if (!cancelled) {
+          setPool(data.items)
+          setPoolTotal(data.total)
+          setPoolPageSize(data.page_size)
+        }
       } catch (error) {
-        if (!cancelled) message.error(error.message)
+        if (!cancelled) setPoolError(error.message)
       } finally {
         if (!cancelled) setPoolLoading(false)
       }
@@ -160,17 +193,19 @@ export default function TeacherExams() {
     return () => {
       cancelled = true
     }
-  }, [filters, message])
+  }, [filters, poolVersion, poolPage, poolPageSize])
 
   const selectPaper = (paperId) => {
     if (paperId === activeId) return
     setDetail(null)
+    setDetailError('')
     setDetailLoading(true)
     setSelectedId(paperId)
   }
 
   const applyFilters = (patch) => {
     setPoolLoading(true)
+    setPoolPage(1)
     setFilters((current) => ({ ...current, ...patch }))
   }
 
@@ -187,8 +222,10 @@ export default function TeacherExams() {
       message.success('卷子已建好')
       setCreateOpen(false)
       form.resetFields()
+      setPapersPage(1)
+      setSelectedId(paper.id)
       await reloadPapers()
-      selectPaper(paper.id)
+      await reloadDetail(paper.id, true)
     } catch (error) {
       message.error(error.message)
     } finally {
@@ -227,6 +264,47 @@ export default function TeacherExams() {
     setPublishClassId(undefined)
   }
 
+  const openPreview = async (paper) => {
+    setPreviewOpen(true)
+    setPreview(null)
+    setPreviewError('')
+    setPreviewLoading(true)
+    try {
+      setPreview(await getPaperPreview(paper.id))
+    } catch (error) {
+      setPreviewError(error.message)
+    } finally {
+      setPreviewLoading(false)
+    }
+  }
+
+  const openResults = async (paper) => {
+    setResultOpen(true)
+    setResultPaper(paper)
+    setResultClasses([])
+    setResultClassId(undefined)
+    setResultError('')
+    setResultLoading(true)
+    try {
+      const data = await listPaperClasses(paper.id)
+      setResultClasses(data.items)
+      setResultClassId(data.items[0]?.class_id)
+    } catch (error) {
+      setResultError(error.message)
+    } finally {
+      setResultLoading(false)
+    }
+  }
+
+  const goResults = () => {
+    if (!resultClassId) {
+      message.warning('请选择班级')
+      return
+    }
+    navigate(`/teacher/class?classId=${resultClassId}&paperId=${resultPaper.id}`)
+    setResultOpen(false)
+  }
+
   const handlePublish = async () => {
     if (!publishClassId) {
       message.warning('请选择要发给的班级')
@@ -239,8 +317,8 @@ export default function TeacherExams() {
       const targetId = publishTarget.id
       setPublishTarget(null)
       await reloadPapers()
-      if (selectedId === targetId) await reloadDetail(targetId, true)
-      else selectPaper(targetId)
+      setSelectedId(targetId)
+      await reloadDetail(targetId, true)
     } catch (error) {
       message.error(error.message)
     } finally {
@@ -267,16 +345,21 @@ export default function TeacherExams() {
     {
       title: '操作',
       key: 'action',
-      width: 150,
+      width: 230,
       render: (_, record) => (
         <Space size={0}>
           <Button type="link" size="small" onClick={() => selectPaper(record.id)}>
             打开
           </Button>
           {record.status === 'published' && (
-            <Button type="link" size="small" onClick={() => openPublish(record)}>
-              再发布
-            </Button>
+            <>
+              <Button type="link" size="small" onClick={() => openResults(record)}>
+                看结果
+              </Button>
+              <Button type="link" size="small" onClick={() => openPublish(record)}>
+                再发布
+              </Button>
+            </>
           )}
         </Space>
       ),
@@ -308,13 +391,33 @@ export default function TeacherExams() {
         }
         style={{ marginBottom: 16 }}
       >
+        {papersError && (
+          <Alert
+            type="error"
+            showIcon
+            message="卷子加载失败"
+            description="请稍后重试"
+            action={
+              <Button size="small" onClick={reloadPapers}>
+                重试
+              </Button>
+            }
+            style={{ marginBottom: 12 }}
+          />
+        )}
         <Table
           rowKey="id"
           size="small"
           loading={loading}
           columns={columns}
           dataSource={papers}
-          pagination={false}
+          pagination={{
+            current: papersPage,
+            pageSize: papersPageSize,
+            total: papersTotal,
+            showSizeChanger: false,
+            onChange: setPapersPage,
+          }}
           locale={{ emptyText: <Empty description="还没有卷子，先新建一份" /> }}
         />
       </Card>
@@ -322,6 +425,20 @@ export default function TeacherExams() {
       {detailLoading ? (
         <Card>
           <Spin />
+        </Card>
+      ) : detailError ? (
+        <Card>
+          <Alert
+            type="error"
+            showIcon
+            message="卷子详情加载失败"
+            description="请稍后重试"
+            action={
+              <Button size="small" onClick={() => reloadDetail(activeId)}>
+                重试
+              </Button>
+            }
+          />
         </Card>
       ) : detail ? (
         <Card
@@ -332,15 +449,18 @@ export default function TeacherExams() {
             </Space>
           }
           extra={
-            detail.status === 'draft' ? (
-              <Button
-                type="primary"
-                disabled={detail.question_count === 0}
-                onClick={() => openPublish(detail)}
-              >
-                发布
-              </Button>
-            ) : null
+            <Space>
+              <Button onClick={() => openPreview(detail)}>预览</Button>
+              {detail.status === 'draft' ? (
+                <Button
+                  type="primary"
+                  disabled={detail.question_count === 0}
+                  onClick={() => openPublish(detail)}
+                >
+                  发布
+                </Button>
+              ) : null}
+            </Space>
           }
         >
           {detail.status === 'draft' ? (
@@ -376,9 +496,28 @@ export default function TeacherExams() {
               >
                 {poolLoading ? (
                   <Spin />
+                ) : poolError ? (
+                  <Alert
+                    type="error"
+                    showIcon
+                    message="题目池加载失败"
+                    description="请稍后重试"
+                    action={
+                      <Button size="small" onClick={() => setPoolVersion((v) => v + 1)}>
+                        重试
+                      </Button>
+                    }
+                  />
                 ) : (
                   <List
                     dataSource={pool}
+                    pagination={{
+                      current: poolPage,
+                      pageSize: poolPageSize,
+                      total: poolTotal,
+                      showSizeChanger: false,
+                      onChange: setPoolPage,
+                    }}
                     locale={{
                       emptyText: <Empty description="没有可加的题（只显示已通过的题）" />,
                     }}
@@ -530,6 +669,93 @@ export default function TeacherExams() {
             <Typography.Text type="secondary">
               确认后会立刻给班内学生建作答记录；重复发布只补没有记录的学生。
             </Typography.Text>
+          </Space>
+        )}
+      </Modal>
+
+      <Modal
+        title={`预览「${preview?.title ?? detail?.title ?? ''}」`}
+        open={previewOpen}
+        onCancel={() => setPreviewOpen(false)}
+        footer={<Button onClick={() => setPreviewOpen(false)}>关闭</Button>}
+        width={640}
+      >
+        {previewLoading ? (
+          <Flex justify="center" style={{ padding: 32 }}>
+            <Spin />
+          </Flex>
+        ) : previewError ? (
+          <Alert
+            type="error"
+            showIcon
+            message="预览加载失败"
+            description={previewError}
+            action={
+              <Button size="small" onClick={() => openPreview(detail)}>
+                重试
+              </Button>
+            }
+          />
+        ) : (
+          <List
+            dataSource={preview?.questions ?? []}
+            locale={{ emptyText: <Empty description="卷子里还没有题" /> }}
+            renderItem={(question) => (
+              <List.Item style={{ display: 'block' }}>
+                <Typography.Paragraph strong>
+                  第 {question.position} 题（{QUESTION_TYPES[question.type] ?? question.type}）
+                </Typography.Paragraph>
+                <Typography.Paragraph>{question.stem}</Typography.Paragraph>
+                {(question.options ?? []).map((text, index) => (
+                  <Typography.Paragraph key={index} style={{ marginBottom: 2 }}>
+                    {optionLetter(index)}. {text}
+                  </Typography.Paragraph>
+                ))}
+              </List.Item>
+            )}
+          />
+        )}
+      </Modal>
+
+      <Modal
+        title={`看结果「${resultPaper?.title ?? ''}」`}
+        open={resultOpen}
+        onOk={goResults}
+        onCancel={() => setResultOpen(false)}
+        okText="查看班级报告"
+        cancelText="取消"
+        okButtonProps={{ disabled: !resultClassId || resultLoading || Boolean(resultError) }}
+      >
+        {resultLoading ? (
+          <Flex justify="center" style={{ padding: 24 }}>
+            <Spin />
+          </Flex>
+        ) : resultError ? (
+          <Alert
+            type="error"
+            showIcon
+            message="结果入口加载失败"
+            description={resultError}
+            action={
+              <Button size="small" onClick={() => openResults(resultPaper)}>
+                重试
+              </Button>
+            }
+          />
+        ) : resultClasses.length === 0 ? (
+          <Empty description="这份卷子还没有班级作答记录" />
+        ) : (
+          <Space direction="vertical" style={{ width: '100%' }} size="middle">
+            <Typography.Text>选择要查看的班级：</Typography.Text>
+            <Select
+              style={{ width: '100%' }}
+              value={resultClassId}
+              onChange={setResultClassId}
+              options={resultClasses.map((item) => ({
+                value: item.class_id,
+                label: `${item.class_name}（${item.student_count} 人）`,
+              }))}
+            />
           </Space>
         )}
       </Modal>

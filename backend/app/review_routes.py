@@ -36,19 +36,33 @@ def require_review_answerer(task, user: User) -> None:
 @router.get("/review/tasks")
 def list_review_tasks(
     scope: str = "due",
+    page: int = 1,
+    page_size: int = 20,
     user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ):
     require_review_reader(user)
     if scope not in REVIEW_SCOPES:
         return fail("复习范围只能是今日到期或全部", 400)
+    if page < 1 or page_size < 1:
+        return fail("页码不对", 422)
+    page_size = min(page_size, 100)
     student_id = user.id if user.role == "student" else None
-    rows = review.list_tasks(session, scope=scope, student_id=student_id)
+    total = review.count_tasks(session, scope=scope, student_id=student_id)
+    rows = review.list_tasks(
+        session,
+        scope=scope,
+        student_id=student_id,
+        limit=page_size,
+        offset=(page - 1) * page_size,
+    )
     items = [
         review.task_to_dict(task, question, student if user.role == "admin" else None)
         for task, question, student in rows
     ]
-    return ok({"items": items})
+    return ok(
+        {"items": items, "total": int(total), "page": page, "page_size": page_size}
+    )
 
 
 @router.post("/review/tasks/{task_id}/answer")

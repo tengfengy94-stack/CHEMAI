@@ -4,6 +4,7 @@ import {
   Button,
   Card,
   Col,
+  Drawer,
   Empty,
   Flex,
   List,
@@ -15,9 +16,19 @@ import {
   Tag,
   Typography,
 } from 'antd'
-import { useNavigate } from 'react-router'
+import { useNavigate, useSearchParams } from 'react-router'
+import {
+  Bar,
+  BarChart,
+  CartesianGrid,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from 'recharts'
 import {
   currentUser,
+  getAttempt,
   getClassExamReport,
   getClassReport,
   getMyClasses,
@@ -80,6 +91,9 @@ const TABLE_PAGINATION = { pageSize: 20, showSizeChanger: false, hideOnSinglePag
 
 export default function TeacherClassReport() {
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
+  const requestedClassId = Number(searchParams.get('classId')) || null
+  const requestedPaperId = Number(searchParams.get('paperId')) || null
   const user = currentUser()
   const [classes, setClasses] = useState([])
   const [classesLoading, setClassesLoading] = useState(true)
@@ -93,6 +107,11 @@ export default function TeacherClassReport() {
   const [examError, setExamError] = useState('')
   const [reloadKey, setReloadKey] = useState(0)
   const [examReloadKey, setExamReloadKey] = useState(0)
+  const [answerOpen, setAnswerOpen] = useState(false)
+  const [answerStudent, setAnswerStudent] = useState(null)
+  const [answerLoading, setAnswerLoading] = useState(false)
+  const [answerError, setAnswerError] = useState('')
+  const [answerData, setAnswerData] = useState(null)
 
   useEffect(() => {
     let cancelled = false
@@ -101,7 +120,13 @@ export default function TeacherClassReport() {
         const data = await getMyClasses()
         if (cancelled) return
         setClasses(data.items)
-        setClassId((current) => current ?? data.items[0]?.id ?? null)
+        setClassId(
+          (current) =>
+            current ??
+            data.items.find((item) => item.id === requestedClassId)?.id ??
+            data.items[0]?.id ??
+            null,
+        )
         if (data.items.length === 0) setOverviewLoading(false)
       } catch (err) {
         if (!cancelled) {
@@ -116,7 +141,7 @@ export default function TeacherClassReport() {
     return () => {
       cancelled = true
     }
-  }, [reloadKey])
+  }, [reloadKey, requestedClassId])
 
   useEffect(() => {
     if (!classId) return
@@ -131,11 +156,13 @@ export default function TeacherClassReport() {
         const data = await getClassReport(classId)
         if (cancelled) return
         setOverview(data)
-        setPaperId((current) =>
-          data.exams.some((item) => item.paper_id === current)
-            ? current
-            : data.exams[0]?.paper_id ?? null,
-        )
+        setPaperId((current) => {
+          if (data.exams.some((item) => item.paper_id === current)) return current
+          if (requestedPaperId && data.exams.some((item) => item.paper_id === requestedPaperId)) {
+            return requestedPaperId
+          }
+          return data.exams[0]?.paper_id ?? null
+        })
         if (data.exams.length === 0) setExamLoading(false)
       } catch (err) {
         if (!cancelled) setOverviewError(err.message)
@@ -147,7 +174,7 @@ export default function TeacherClassReport() {
     return () => {
       cancelled = true
     }
-  }, [classId, reloadKey])
+  }, [classId, reloadKey, requestedPaperId])
 
   useEffect(() => {
     if (!classId || !paperId) return
@@ -173,6 +200,21 @@ export default function TeacherClassReport() {
 
   const retry = () => setReloadKey((key) => key + 1)
   const retryExam = () => setExamReloadKey((key) => key + 1)
+
+  const openAnswer = async (student) => {
+    setAnswerOpen(true)
+    setAnswerStudent(student)
+    setAnswerData(null)
+    setAnswerError('')
+    setAnswerLoading(true)
+    try {
+      setAnswerData(await getAttempt(student.attempt_id))
+    } catch (err) {
+      setAnswerError(err.message)
+    } finally {
+      setAnswerLoading(false)
+    }
+  }
 
   const renderExam = () => {
     if (examLoading) {
@@ -214,6 +256,54 @@ export default function TeacherClassReport() {
           dataSource={exam.questions}
           locale={{ emptyText: <Empty description="这份卷子里还没有题" /> }}
         />
+        <Card size="small" title="学生答卷" style={{ marginTop: 16 }}>
+          {(exam.students ?? []).length === 0 ? (
+            <Empty description="这个班还没有作答记录" />
+          ) : (
+            <Table
+              rowKey="attempt_id"
+              size="small"
+              pagination={TABLE_PAGINATION}
+              dataSource={exam.students ?? []}
+              columns={[
+                { title: '姓名', dataIndex: 'student_name', ellipsis: true },
+                {
+                  title: '状态',
+                  dataIndex: 'status',
+                  width: 100,
+                  render: (value) => (
+                    <Tag color={ATTEMPT_STATUS[value]?.color}>
+                      {ATTEMPT_STATUS[value]?.label ?? value}
+                    </Tag>
+                  ),
+                },
+                {
+                  title: '分数',
+                  dataIndex: 'score',
+                  width: 80,
+                  align: 'center',
+                  render: (value) =>
+                    value === null || value === undefined ? '—' : Number(value).toFixed(1),
+                },
+                {
+                  title: '操作',
+                  key: 'action',
+                  width: 110,
+                  render: (_, row) => (
+                    <Button
+                      type="link"
+                      size="small"
+                      disabled={!['submitted', 'graded'].includes(row.status)}
+                      onClick={() => openAnswer(row)}
+                    >
+                      查看答卷
+                    </Button>
+                  ),
+                },
+              ]}
+            />
+          )}
+        </Card>
         <Card size="small" title="未交名单" style={{ marginTop: 16 }}>
           {exam.unsubmitted.length === 0 ? (
             <Empty description="都交了" />
@@ -313,13 +403,40 @@ export default function TeacherClassReport() {
               </Button>
             </Empty>
           ) : (
-            <Table
-              rowKey="knowledge_point_id"
-              size="small"
-              pagination={TABLE_PAGINATION}
-              columns={knowledgeColumns}
-              dataSource={overview.knowledge_points}
-            />
+            <>
+              <div style={{ height: 280, marginBottom: 16 }}>
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart
+                    data={overview.knowledge_points}
+                    margin={{ top: 8, right: 16, bottom: 32, left: 0 }}
+                  >
+                    <CartesianGrid strokeDasharray="3 3" />
+                    <XAxis
+                      dataKey="name"
+                      tick={{ fontSize: 12 }}
+                      interval={0}
+                      angle={-15}
+                      textAnchor="end"
+                    />
+                    <YAxis tick={{ fontSize: 12 }} />
+                    <Tooltip
+                      formatter={(value) => [
+                        `${Number(value).toFixed(1)}%`,
+                        '错误率',
+                      ]}
+                    />
+                    <Bar dataKey="error_rate" fill="#1677ff" radius={[4, 4, 0, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+              <Table
+                rowKey="knowledge_point_id"
+                size="small"
+                pagination={TABLE_PAGINATION}
+                columns={knowledgeColumns}
+                dataSource={overview.knowledge_points}
+              />
+            </>
           )}
         </Card>
 
@@ -422,6 +539,80 @@ export default function TeacherClassReport() {
       </Card>
 
       {renderContent()}
+
+      <Drawer
+        title={answerStudent ? `${answerStudent.student_name} 的答卷` : '学生答卷'}
+        open={answerOpen}
+        onClose={() => setAnswerOpen(false)}
+        width={720}
+      >
+        {answerLoading ? (
+          <Flex justify="center" style={{ padding: 32 }}>
+            <Spin />
+          </Flex>
+        ) : answerError ? (
+          <Alert
+            type="error"
+            showIcon
+            message="答卷加载失败"
+            description={answerError}
+            action={
+              <Button size="small" onClick={() => openAnswer(answerStudent)}>
+                重试
+              </Button>
+            }
+          />
+        ) : answerData ? (
+          <>
+            <Typography.Paragraph>
+              状态：
+              <Tag color={ATTEMPT_STATUS[answerData.status]?.color}>
+                {ATTEMPT_STATUS[answerData.status]?.label ?? answerData.status}
+              </Tag>
+              分数：{answerData.score === null || answerData.score === undefined
+                ? '—'
+                : Number(answerData.score).toFixed(1)}
+            </Typography.Paragraph>
+            <List
+              dataSource={answerData.questions ?? []}
+              locale={{ emptyText: <Empty description="这份答卷还没有题目" /> }}
+              renderItem={(question, index) => (
+                <List.Item style={{ display: 'block' }}>
+                  <Typography.Paragraph strong>
+                    第 {index + 1} 题（{QUESTION_TYPES[question.type] ?? question.type}）
+                    {answerData.status === 'graded' ? (
+                      <Tag
+                        color={question.is_correct ? 'green' : 'red'}
+                        style={{ marginLeft: 8 }}
+                      >
+                        {question.is_correct ? '答对' : '答错'}
+                      </Tag>
+                    ) : null}
+                  </Typography.Paragraph>
+                  <Typography.Paragraph>{question.stem}</Typography.Paragraph>
+                  <Typography.Paragraph>
+                    学生答案：{question.student_answer || '未作答'}
+                  </Typography.Paragraph>
+                  {answerData.status === 'graded' ? (
+                    <>
+                      <Typography.Paragraph>
+                        标准答案：{question.answer}
+                      </Typography.Paragraph>
+                      <Typography.Paragraph type="secondary">
+                        解析：{question.explanation || '暂无解析'}
+                      </Typography.Paragraph>
+                    </>
+                  ) : (
+                    <Typography.Text type="secondary">
+                      判分完成后显示标准答案与解析。
+                    </Typography.Text>
+                  )}
+                </List.Item>
+              )}
+            />
+          </>
+        ) : null}
+      </Drawer>
     </div>
   )
 }

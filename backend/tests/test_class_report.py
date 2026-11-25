@@ -4,7 +4,7 @@ from sqlalchemy import select
 
 import app.events as events
 from app.db import make_engine, make_session_factory
-from app.models import User
+from app.models import Class, User
 from exam_helpers import (
     QUESTION,
     attempt_for_paper,
@@ -313,7 +313,8 @@ def test_class_and_exam_report_permissions(client, setup):
     assert exam_report(client, s1, c1, paper["id"]).status_code == 403
     assert exam_report(client, admin, c1, paper["id"]).status_code == 200
     assert exam_report(client, t1, c1, 99999).status_code == 404
-    assert exam_report(client, t1, c1, other_paper["id"]).status_code == 404
+    # 卷子存在但属于同事：不能看，403；不是 404。
+    assert exam_report(client, t1, c1, other_paper["id"]).status_code == 403
 
 
 def test_class_report_excludes_practice_and_ungraded(client, setup, monkeypatch):
@@ -407,3 +408,30 @@ def test_class_students_mark_transferred_and_gate_report_link(
     assert client.get(f"/api/reports/students/{s1_id}", headers=auth(t2)).status_code == 200
     assert client.get(f"/api/reports/students/{s2_id}", headers=auth(t1)).status_code == 200
     assert client.get(f"/api/reports/students/{s1_id}", headers=auth(admin)).status_code == 200
+
+
+def test_class_report_hides_previous_teacher_papers_after_reassignment(
+    client, setup, database_url
+):
+    c1 = setup["c1"]
+    t1, t2 = login(client, "t1"), login(client, "t2")
+    admin = login(client, "admin")
+    old_question = question(client, t1, "旧老师的题")
+    old_paper = paper_with(client, t1, c1, [old_question], "旧老师卷")
+    shared_question = question(client, admin, "管理员共享题")
+    shared_paper = paper_with(client, admin, c1, [shared_question], "共享卷")
+
+    engine = make_engine(database_url)
+    factory = make_session_factory(engine)
+    with factory() as session:
+        session.get(Class, c1).teacher_id = user_id(database_url, "t2")
+        session.commit()
+    engine.dispose()
+
+    # 新老师接手班级：只看到管理员代发的共享卷，看不到前任的卷子。
+    data = overview(client, t2, c1)
+    assert {item["paper_title"] for item in data["exams"]} == {"共享卷"}
+    assert exam_report(client, t2, c1, old_paper["id"]).status_code == 403
+    assert exam_report(client, t2, c1, shared_paper["id"]).status_code == 200
+    # 原老师失去这个班，不能再打开班级报告。
+    assert client.get(f"/api/reports/classes/{c1}", headers=auth(t1)).status_code == 403

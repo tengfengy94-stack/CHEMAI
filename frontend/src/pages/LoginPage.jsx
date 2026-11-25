@@ -57,7 +57,7 @@ export default function LoginPage() {
             name="password"
             rules={[{ required: true, message: '请输入密码' }]}
           >
-            <Input.Password placeholder="演示环境统一为 chem2026" />
+            <Input.Password placeholder="请输入密码" />
           </Form.Item>
           <Button type="primary" htmlType="submit" block loading={submitting}>
             登录

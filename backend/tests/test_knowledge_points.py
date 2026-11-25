@@ -29,11 +29,14 @@ def tree(client, token):
     return r.json()["data"]["items"]
 
 
-def set_points(client, token, question_id, point_ids):
+def set_points(client, token, question_id, point_ids, primary_point_id=None):
+    body = {"knowledge_point_ids": point_ids}
+    if primary_point_id is not None:
+        body["primary_point_id"] = primary_point_id
     return client.put(
         f"/api/questions/{question_id}/knowledge-points",
         headers=auth(token),
-        json={"knowledge_point_ids": point_ids},
+        json=body,
     )
 
 
@@ -140,6 +143,104 @@ def test_question_association_replace_dedup_and_clear(client, people):
     assert set_points(client, admin, other["id"], [redox["id"]]).status_code == 200
     assert set_points(client, t1, 99999, [redox["id"]]).status_code == 404
     assert set_points(client, t1, question["id"], [99999]).status_code == 404
+
+
+def test_point_questions_lists_own_questions_and_admin_all(client, people):
+    t1 = login(client, "t1")
+    t2 = login(client, "t2")
+    admin = login(client, "admin")
+    student = login(client, "s1")
+    redox = point(client, t1, "氧化还原")
+    q1 = create_question(client, t1, stem="t1 的题")
+    q2 = create_question(client, t2, stem="t2 的题")
+    assert set_points(client, t1, q1["id"], [redox["id"]]).status_code == 200
+    assert set_points(client, t2, q2["id"], [redox["id"]]).status_code == 200
+
+    own = client.get(
+        f"/api/knowledge-points/{redox['id']}/questions", headers=auth(t1)
+    )
+    assert own.status_code == 200, own.text
+    own_data = own.json()["data"]
+    assert own_data["total"] == 1
+    assert [item["id"] for item in own_data["items"]] == [q1["id"]]
+    assert "answer" in own_data["items"][0]
+
+    everything = client.get(
+        f"/api/knowledge-points/{redox['id']}/questions?page_size=1",
+        headers=auth(admin),
+    )
+    assert everything.status_code == 200, everything.text
+    assert everything.json()["data"]["total"] == 2
+    assert len(everything.json()["data"]["items"]) == 1
+
+    assert (
+        client.get(
+            f"/api/knowledge-points/{redox['id']}/questions", headers=auth(student)
+        ).status_code
+        == 403
+    )
+    assert (
+        client.get("/api/knowledge-points/99999/questions", headers=auth(t1)).status_code
+        == 404
+    )
+
+
+def test_question_primary_point_and_readback(client, people):
+    t1 = login(client, "t1")
+    t2 = login(client, "t2")
+    redox = point(client, t1, "氧化还原")
+    electro = point(client, t1, "电化学")
+    third = point(client, t1, "化学平衡")
+    question = create_question(client, t1, stem="主次题")
+
+    r = set_points(
+        client,
+        t1,
+        question["id"],
+        [redox["id"], electro["id"]],
+        primary_point_id=redox["id"],
+    )
+    assert r.status_code == 200, r.text
+    flags = {item["id"]: item["is_primary"] for item in r.json()["data"]["knowledge_points"]}
+    assert flags == {redox["id"]: True, electro["id"]: False}
+
+    readback = client.get(
+        f"/api/questions/{question['id']}/knowledge-points", headers=auth(t1)
+    )
+    assert readback.status_code == 200, readback.text
+    assert {
+        item["id"]: item["is_primary"]
+        for item in readback.json()["data"]["knowledge_points"]
+    } == {redox["id"]: True, electro["id"]: False}
+    assert (
+        client.get(
+            f"/api/questions/{question['id']}/knowledge-points", headers=auth(t2)
+        ).status_code
+        == 403
+    )
+
+    moved = set_points(
+        client,
+        t1,
+        question["id"],
+        [redox["id"], electro["id"]],
+        primary_point_id=electro["id"],
+    )
+    assert moved.status_code == 200, moved.text
+    assert {
+        item["id"]: item["is_primary"]
+        for item in moved.json()["data"]["knowledge_points"]
+    } == {redox["id"]: False, electro["id"]: True}
+
+    invalid = set_points(
+        client,
+        t1,
+        question["id"],
+        [redox["id"]],
+        primary_point_id=third["id"],
+    )
+    assert invalid.status_code == 400
+    assert "主知识点" in invalid.json()["error"]
 
 
 def test_merge_moves_aliases_links_and_children(client, people):

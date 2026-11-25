@@ -18,7 +18,7 @@ from app import config, review  # review 导入即注册判分事件订阅
 from app.agent import build_chat_model
 from app.agent_routes import router as agent_router
 from app.agent_runtime import build_agents
-from app.auth import AccessDeniedError, AuthRequiredError
+from app.auth import AccessDeniedError, AuthRequiredError, jwt_secret
 from app.class_reporting import ClassExamNotFound
 from app.config import ModelConfigError
 from app.db import make_engine, make_session_factory
@@ -57,6 +57,8 @@ def create_app(
     seed: bool = True,
     eval_mode: bool | None = None,
 ) -> FastAPI:
+    # 生产环境缺少 JWT 密钥时在启动阶段失败，不要等到第一次登录。
+    jwt_secret()
     url = database_url or config.database_url()
     engine = make_engine(url)
     session_factory = make_session_factory(engine)
@@ -65,7 +67,7 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        if seed:
+        if seed and config.seed_demo_enabled():
             with session_factory() as session:
                 seed_if_empty(session)
 

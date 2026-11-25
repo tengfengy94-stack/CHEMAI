@@ -5,6 +5,7 @@ import pytest
 
 from evalkit.cases import CASE_PATH, CaseValidationError, load_cases
 from evalkit.db import build_eval_database
+from evalkit.judge import FAILURE_CASE_INVALID, FAILURE_TYPES
 from evalkit.references import build_reference_index, resolve_point
 
 
@@ -101,3 +102,8 @@ def test_rejects_teacher_without_class(eval_index, tmp_path):
     teacher.pop("class_ref")
     with pytest.raises(CaseValidationError, match="class_ref"):
         load_cases(eval_index, _write_cases(tmp_path, raw))
+
+
+def test_failure_taxonomy_has_four_classes():
+    assert len(FAILURE_TYPES) == 4
+    assert FAILURE_CASE_INVALID in FAILURE_TYPES

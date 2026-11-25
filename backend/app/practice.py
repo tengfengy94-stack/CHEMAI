@@ -290,6 +290,7 @@ def answer_question(
     record = PracticeRecord(
         student_id=student_id,
         question_id=question.id,
+        student_answer=submitted,
         difficulty=served_difficulty,
         is_correct=is_correct,
         created_at=moment,

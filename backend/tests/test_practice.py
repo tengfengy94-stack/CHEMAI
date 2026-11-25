@@ -506,6 +506,7 @@ def test_answer_records_served_difficulty_and_outcome(client, db, students):
         record = session.scalar(select(PracticeRecord))
         assert record.student_id == students["s1"]
         assert record.question_id == q["id"]
+        assert record.student_answer == "B"
         assert record.difficulty == 3
         assert record.is_correct is False
 

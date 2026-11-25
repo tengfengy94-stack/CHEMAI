@@ -380,7 +380,7 @@ def exam_result(
             if attempt_id is not None:
                 try:
                     record = attempts.get_attempt_record(attempt_id, session)
-                    attempts.require_attempt_reader(record, user)
+                    attempts.require_attempt_reader(session, record, user)
                 except attempts.AttemptNotFound:
                     return _refuse("没找到这条作答记录")
                 except Exception:  # noqa: BLE001 - 权限拒绝统一成中文结果

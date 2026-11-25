@@ -22,10 +22,6 @@ from app.knowledge_seed import FORMAL_CHILDREN, FORMAL_NAMES, FORMAL_ROOTS, TEMP
 from app.models import KnowledgePoint, KnowledgePointAlias, QuestionKnowledgePoint
 
 
-class KnowledgeMigrationError(Exception):
-    """迁移无法安全执行；命令层打印中文原因并返回非零。"""
-
-
 @dataclass
 class MigrationPlan:
     create: list[dict[str, str | None]] = field(default_factory=list)

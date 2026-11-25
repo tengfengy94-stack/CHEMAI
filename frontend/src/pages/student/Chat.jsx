@@ -45,6 +45,8 @@ export default function Chat() {
   const [error, setError] = useState('')
   const [practicePlan, setPracticePlan] = useState([])
   const [historyLoading, setHistoryLoading] = useState(true)
+  const [historyError, setHistoryError] = useState('')
+  const [historyRetryKey, setHistoryRetryKey] = useState(0)
   const listRef = useRef(null)
   const abortRef = useRef(null)
   const idRef = useRef(0)
@@ -84,9 +86,9 @@ export default function Chat() {
             status: 'done',
           })),
         )
-        setError('')
+        setHistoryError('')
       } catch (err) {
-        if (!cancelled) setError(err.message || '历史加载失败')
+        if (!cancelled) setHistoryError(err.message || '历史加载失败')
       } finally {
         if (!cancelled) setHistoryLoading(false)
       }
@@ -97,7 +99,7 @@ export default function Chat() {
     }
     // classes.length/classId 是老师切换班级的依赖；学生只加载一次
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [classId, isTeacher, classes.length])
+  }, [classId, isTeacher, classes.length, historyRetryKey])
 
   const run = async (text, { appendUser = true, retry = false } = {}) => {
     if (sendingRef.current) return
@@ -248,6 +250,24 @@ export default function Chat() {
           <Flex align="center" justify="center" style={{ height: '100%' }}>
             <Spin />
           </Flex>
+        ) : historyError ? (
+          <Alert
+            type="error"
+            showIcon
+            message="历史加载失败"
+            description={historyError}
+            action={
+              <Button
+                size="small"
+                onClick={() => {
+                  setHistoryLoading(true)
+                  setHistoryRetryKey((key) => key + 1)
+                }}
+              >
+                重试
+              </Button>
+            }
+          />
         ) : messages.length === 0 ? (
           <Flex
             vertical

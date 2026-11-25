@@ -15,7 +15,13 @@ import httpx
 from app import config
 from evalkit.cases import CaseValidationError, EvalCase, load_cases
 from evalkit.db import EvalFixture, build_eval_database, eval_database_path
-from evalkit.judge import CaseResult, judge_case, summarize
+from evalkit.judge import (
+    FAILURE_CASE_INVALID,
+    FAILURE_CONTENT,
+    CaseResult,
+    judge_case,
+    summarize,
+)
 from evalkit.references import build_reference_index
 
 
@@ -212,7 +218,7 @@ def _run_case(
             case.id,
             case.category,
             False,
-            "内容不对",
+            FAILURE_CONTENT,
             f"执行失败：{status}",
             {"actual_tools": tools, "answer": answer[:2000], "status": status},
         )
@@ -223,7 +229,7 @@ def _run_case(
             case.id,
             case.category,
             False,
-            "内容不对",
+            FAILURE_CONTENT,
             f"读取工具轨迹失败：{exc}",
             {"actual_tools": tools, "answer": answer[:2000]},
         )
@@ -441,7 +447,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         cases = load_cases(index)
     except CaseValidationError as exc:
-        print(f"用例不成立，停止评测：{exc}")
+        print(f"[{FAILURE_CASE_INVALID}] 停止评测：{exc}")
         return 2
     run_id = "r" + datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")
     started = time.monotonic()

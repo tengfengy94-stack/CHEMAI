@@ -42,6 +42,8 @@ class User(Base):
     role: Mapped[str] = mapped_column(String(16), nullable=False)
     # 学生归属的班；老师、管理员为 NULL
     class_id: Mapped[int | None] = mapped_column(ForeignKey("classes.id"), nullable=True)
+    # active / inactive；离职、停用改状态，不删人
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="active")
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
 
 
@@ -185,6 +187,8 @@ class PracticeRecord(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     student_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
     question_id: Mapped[int] = mapped_column(ForeignKey("questions.id"), nullable=False)
+    # 学生当时提交的答案；历史记录迁移时为空串
+    student_answer: Mapped[str] = mapped_column(Text, nullable=False, default="")
     # 1 / 2 / 3
     difficulty: Mapped[int] = mapped_column(Integer, nullable=False)
     is_correct: Mapped[bool] = mapped_column(Boolean, nullable=False)
@@ -247,3 +251,5 @@ class QuestionKnowledgePoint(Base):
     knowledge_point_id: Mapped[int] = mapped_column(
         ForeignKey("knowledge_points.id"), nullable=False
     )
+    # 主知识点：一题最多一个；统计仍按所有关联计数
+    is_primary: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)

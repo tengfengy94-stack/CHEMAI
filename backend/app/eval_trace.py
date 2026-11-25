@@ -57,8 +57,3 @@ class EvalTraceStore:
     def get(self, thread_id: str) -> list[dict]:
         with self._lock:
             return [dict(entry) for entry in self._items.get(thread_id, [])]
-
-    def clear(self, thread_id: str) -> None:
-        with self._lock:
-            self._items.pop(thread_id, None)
-            self._known.discard(thread_id)

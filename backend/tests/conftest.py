@@ -1,4 +1,10 @@
 """测试夹具：每个测试一份独立的临时库，结构用迁移建，永远不碰开发库 chemai.db。"""
+import os
+
+# 测试用固定密钥，避免在仓库里生成 .jwt-secret；生产缺密钥的行为单独测。
+os.environ.setdefault("CHEMAI_JWT_SECRET", "chemai-test-secret")
+os.environ.setdefault("CHEMAI_ENV", "dev")
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select

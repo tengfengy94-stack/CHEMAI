@@ -5,10 +5,13 @@ import {
   App as AntApp,
   Button,
   Card,
+  Divider,
+  Drawer,
   Empty,
   Flex,
   Form,
   Input,
+  List,
   Modal,
   Result,
   Select,
@@ -22,11 +25,16 @@ import { PlusOutlined } from '@ant-design/icons'
 import {
   createKnowledgePoint,
   currentUser,
+  getKnowledgePointQuestions,
+  getQuestionKnowledgePoints,
   listKnowledgePoints,
+  listQuestions,
   logout,
   mergeKnowledgePoint,
+  setQuestionKnowledgePoints,
   updateKnowledgePoint,
 } from '../../api.js'
+import { QUESTION_TYPES, REVIEW_STATUS } from '../../constants.js'
 
 const flatten = (nodes, depth = 0) =>
   nodes.flatMap((node) => [
@@ -75,6 +83,18 @@ export default function Knowledge() {
   const [mergeTargetId, setMergeTargetId] = useState(undefined)
   const [merging, setMerging] = useState(false)
 
+  const [questionsOpen, setQuestionsOpen] = useState(false)
+  const [questionsPoint, setQuestionsPoint] = useState(null)
+  const [questions, setQuestions] = useState([])
+  const [questionsLoading, setQuestionsLoading] = useState(false)
+  const [questionsError, setQuestionsError] = useState('')
+  const [questionsPage, setQuestionsPage] = useState(1)
+  const [questionsPageSize, setQuestionsPageSize] = useState(20)
+  const [questionsTotal, setQuestionsTotal] = useState(0)
+  const [questionCandidates, setQuestionCandidates] = useState([])
+  const [candidateLoading, setCandidateLoading] = useState(false)
+  const [linking, setLinking] = useState(false)
+
   const applyTree = useCallback((items) => {
     setTree(items)
     setExpandedKeys(flatten(items).map((node) => node.id))
@@ -92,6 +112,98 @@ export default function Knowledge() {
       setLoading(false)
     }
   }, [applyTree])
+
+  const loadPointQuestions = useCallback(
+    async (node, page = questionsPage) => {
+      if (!node) return
+      setQuestionsLoading(true)
+      setQuestionsError('')
+      try {
+        const data = await getKnowledgePointQuestions(node.id, {
+          page,
+          pageSize: questionsPageSize,
+        })
+        setQuestions(data.items)
+        setQuestionsTotal(data.total)
+        setQuestionsPageSize(data.page_size)
+        setQuestionsPage(page)
+      } catch (error) {
+        setQuestionsError(error.message)
+      } finally {
+        setQuestionsLoading(false)
+      }
+    },
+    [questionsPage, questionsPageSize],
+  )
+
+  const openQuestions = (node) => {
+    setQuestionsPoint(node)
+    setQuestions([])
+    setQuestionsError('')
+    setQuestionCandidates([])
+    setQuestionsOpen(true)
+    setQuestionsPage(1)
+    loadPointQuestions(node, 1)
+  }
+
+  const searchCandidates = async (value) => {
+    setCandidateLoading(true)
+    try {
+      const data = await listQuestions({ q: value.trim() || undefined, page: 1 })
+      const linked = new Set(questions.map((item) => item.id))
+      setQuestionCandidates(data.items.filter((item) => !linked.has(item.id)))
+    } catch (error) {
+      message.error(error.message)
+    } finally {
+      setCandidateLoading(false)
+    }
+  }
+
+  const saveQuestionLinks = async (question, attach) => {
+    if (!questionsPoint) return
+    setLinking(true)
+    try {
+      const existing = await getQuestionKnowledgePoints(question.id)
+      const currentIds = existing.knowledge_points.map((item) => item.id)
+      const nextIds = attach
+        ? [...new Set([...currentIds, questionsPoint.id])]
+        : currentIds.filter((id) => id !== questionsPoint.id)
+      const primary = existing.knowledge_points.find((item) => item.is_primary)?.id
+      const nextPrimary = primary && nextIds.includes(primary) ? primary : null
+      await setQuestionKnowledgePoints(question.id, nextIds, nextPrimary)
+      message.success(attach ? '题目已关联' : '已取消关联')
+      const nextPage =
+        !attach && questions.length === 1 && questionsPage > 1
+          ? questionsPage - 1
+          : questionsPage
+      await loadPointQuestions(questionsPoint, nextPage)
+      await load()
+      if (attach) {
+        setQuestionCandidates((current) => current.filter((item) => item.id !== question.id))
+      }
+    } catch (error) {
+      message.error(error.message)
+    } finally {
+      setLinking(false)
+    }
+  }
+
+  const setPrimary = async (question) => {
+    if (!questionsPoint) return
+    setLinking(true)
+    try {
+      const existing = await getQuestionKnowledgePoints(question.id)
+      const ids = existing.knowledge_points.map((item) => item.id)
+      await setQuestionKnowledgePoints(question.id, ids, questionsPoint.id)
+      message.success('已设为主知识点')
+      await loadPointQuestions(questionsPoint, questionsPage)
+      await load()
+    } catch (error) {
+      message.error(error.message)
+    } finally {
+      setLinking(false)
+    }
+  }
 
   useEffect(() => {
     let cancelled = false
@@ -230,6 +342,9 @@ export default function Knowledge() {
               建子节点
             </Button>
           )}
+          <Button size="small" onClick={() => openQuestions(record)}>
+            题目
+          </Button>
           <Button size="small" onClick={() => openEdit(record)}>
             编辑
           </Button>
@@ -431,6 +546,149 @@ export default function Knowledge() {
           </>
         )}
       </Modal>
+
+      <Drawer
+        title={questionsPoint ? `「${questionsPoint.name}」的题目` : '知识点题目'}
+        open={questionsOpen}
+        onClose={() => setQuestionsOpen(false)}
+        width={640}
+      >
+        {questionsError ? (
+          <Alert
+            type="error"
+            showIcon
+            message="题目加载失败"
+            description={questionsError}
+            action={
+              <Button
+                size="small"
+                onClick={() => loadPointQuestions(questionsPoint, questionsPage)}
+              >
+                重试
+              </Button>
+            }
+          />
+        ) : questionsLoading ? (
+          <Flex justify="center" style={{ padding: 32 }}>
+            <Spin />
+          </Flex>
+        ) : questions.length === 0 ? (
+          <Empty description="这个知识点还没有关联题目" />
+        ) : (
+          <List
+            dataSource={questions}
+            pagination={{
+              current: questionsPage,
+              pageSize: questionsPageSize,
+              total: questionsTotal,
+              showSizeChanger: false,
+              onChange: (page) => loadPointQuestions(questionsPoint, page),
+            }}
+            renderItem={(item) => (
+              <List.Item
+                actions={[
+                  !item.is_primary ? (
+                    <Button
+                      key="primary"
+                      size="small"
+                      type="link"
+                      loading={linking}
+                      onClick={() => setPrimary(item)}
+                    >
+                      设为主
+                    </Button>
+                  ) : null,
+                  <Button
+                    key="remove"
+                    size="small"
+                    danger
+                    loading={linking}
+                    onClick={() => saveQuestionLinks(item, false)}
+                  >
+                    移除
+                  </Button>,
+                ].filter(Boolean)}
+              >
+                <List.Item.Meta
+                  title={
+                    <Typography.Text ellipsis={{ tooltip: item.stem }}>
+                      {item.stem}
+                    </Typography.Text>
+                  }
+                  description={
+                    <Space size={4} wrap>
+                      <Tag>{QUESTION_TYPES[item.type] ?? item.type}</Tag>
+                      <Tag>难度 {item.difficulty}</Tag>
+                      <Tag color={REVIEW_STATUS[item.status]?.color}>
+                        {REVIEW_STATUS[item.status]?.label ?? item.status}
+                      </Tag>
+                      {item.is_primary ? <Tag color="blue">主知识点</Tag> : null}
+                    </Space>
+                  }
+                />
+              </List.Item>
+            )}
+          />
+        )}
+
+        <Divider />
+        <Typography.Text strong>关联题目</Typography.Text>
+        <Typography.Paragraph type="secondary" style={{ marginTop: 4 }}>
+          搜索你建的题目，关联后进入弱项统计和练习选题。
+        </Typography.Paragraph>
+        <Input.Search
+          allowClear
+          placeholder="按题干关键词搜索"
+          enterButton="搜索"
+          loading={candidateLoading}
+          onSearch={searchCandidates}
+          style={{ marginBottom: 12 }}
+        />
+        {candidateLoading ? (
+          <Flex justify="center" style={{ padding: 16 }}>
+            <Spin />
+          </Flex>
+        ) : (
+          <List
+            dataSource={questionCandidates}
+            locale={{
+              emptyText: <Empty description="搜索后从结果里选择要关联的题目" />,
+            }}
+            renderItem={(item) => (
+              <List.Item
+                actions={[
+                  <Button
+                    key="attach"
+                    size="small"
+                    type="link"
+                    loading={linking}
+                    onClick={() => saveQuestionLinks(item, true)}
+                  >
+                    关联
+                  </Button>,
+                ]}
+              >
+                <List.Item.Meta
+                  title={
+                    <Typography.Text ellipsis={{ tooltip: item.stem }}>
+                      {item.stem}
+                    </Typography.Text>
+                  }
+                  description={
+                    <Space size={4} wrap>
+                      <Tag>{QUESTION_TYPES[item.type] ?? item.type}</Tag>
+                      <Tag>难度 {item.difficulty}</Tag>
+                      <Tag color={REVIEW_STATUS[item.status]?.color}>
+                        {REVIEW_STATUS[item.status]?.label ?? item.status}
+                      </Tag>
+                    </Space>
+                  }
+                />
+              </List.Item>
+            )}
+          />
+        )}
+      </Drawer>
     </div>
   )
 }

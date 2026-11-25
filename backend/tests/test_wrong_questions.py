@@ -1,7 +1,10 @@
 """错题清单：按学生 + 题去重、最近答案、排序、来源与可见范围（第 06 章）。"""
 import pytest
+from sqlalchemy import select
 
 import app.routes as routes
+from app import review
+from app.models import User
 from exam_helpers import (
     BLANK_QUESTION,
     MULTIPLE_QUESTION,
@@ -208,7 +211,7 @@ def test_ungraded_record_is_not_listed_until_retry_succeeds(
     assert items[0]["attempt_id"] == attempt["id"]
 
 
-def test_wrong_list_scope_and_empty_state(client, classroom, make_user):
+def test_wrong_list_scope_and_empty_state(client, classroom, make_user, make_class):
     t1 = login(client, "t1")
     single = make_approved(client, t1, **QUESTION)
     paper = paper_with(client, t1, classroom, [single], "权限卷")
@@ -230,9 +233,34 @@ def test_wrong_list_scope_and_empty_state(client, classroom, make_user):
     assert s2_items[0]["student_name"] == "s2"
     assert s2_items[0]["student_answer"] == "C"
 
-    teacher = client.get("/api/wrong-questions", headers=auth(t1))
-    assert teacher.status_code == 403
-    assert "错题" in teacher.json()["error"]
+    # 老师必须指定自己带的班；本班能看到，别班/不存在的班拒绝。
+    assert client.get("/api/wrong-questions", headers=auth(t1)).status_code == 422
+    teacher = client.get(
+        f"/api/wrong-questions?class_id={classroom}", headers=auth(t1)
+    )
+    assert teacher.status_code == 200, teacher.text
+    teacher_items = teacher.json()["data"]["items"]
+    assert len(teacher_items) == 2
+    assert {item["student_name"] for item in teacher_items} == {"s1", "s2"}
+
+    make_user("t2", role="teacher")
+    other_class = make_class("别班", "t2")
+    other = client.get(
+        f"/api/wrong-questions?class_id={other_class}", headers=auth(t1)
+    )
+    assert other.status_code == 403
+
+    # 学生不能按班级查，也不能按来源参数越权。
+    assert (
+        client.get(
+            f"/api/wrong-questions?class_id={classroom}", headers=auth(s1)
+        ).status_code
+        == 403
+    )
+    assert (
+        client.get("/api/wrong-questions?source=bad", headers=auth(s1)).status_code
+        == 422
+    )
 
     admin = login(client, "admin")
     admin_items = wrong_list(client, admin)
@@ -243,3 +271,81 @@ def test_wrong_list_scope_and_empty_state(client, classroom, make_user):
     make_user("s3", role="student", class_id=classroom)
     s3 = login(client, "s3")
     assert wrong_list(client, s3) == []
+
+
+def test_wrong_list_includes_practice_and_review_sources(client, classroom):
+    t1 = login(client, "t1")
+    s1 = login(client, "s1")
+    practice_question = make_approved(client, t1, stem="练习错题")
+    review_question = make_approved(client, t1, stem="复习错题")
+
+    practiced = client.post(
+        "/api/practice/answers",
+        headers=auth(s1),
+        json={"question_id": practice_question["id"], "answer": "B", "difficulty": 2},
+    )
+    assert practiced.status_code == 200, practiced.text
+    assert practiced.json()["data"]["is_correct"] is False
+
+    with client.app.state.session_factory() as session:
+        student_id = session.scalar(select(User.id).where(User.username == "s1"))
+        task = review.add_manual_task(session, student_id, review_question["id"])
+        task_id = task.id
+
+    reviewed = client.post(
+        f"/api/review/tasks/{task_id}/answer",
+        headers=auth(s1),
+        json={"student_answer": "B"},
+    )
+    assert reviewed.status_code == 200, reviewed.text
+    assert reviewed.json()["data"]["is_correct"] is False
+
+    items = wrong_list(client, s1)
+    by_question = {item["question_id"]: item for item in items}
+    practice_item = by_question[practice_question["id"]]
+    assert practice_item["source"] == "practice"
+    assert practice_item["student_answer"] == "B"
+    assert practice_item["paper_title"] is None
+    assert practice_item["attempt_id"] is None
+
+    review_item = by_question[review_question["id"]]
+    assert review_item["source"] == "review"
+    assert review_item["student_answer"] == "B"
+    assert review_item["paper_title"] is None
+
+    only_practice = client.get(
+        "/api/wrong-questions?source=practice", headers=auth(s1)
+    )
+    assert only_practice.status_code == 200, only_practice.text
+    assert {item["source"] for item in only_practice.json()["data"]["items"]} == {
+        "practice"
+    }
+
+    only_review = client.get("/api/wrong-questions?source=review", headers=auth(s1))
+    assert only_review.status_code == 200, only_review.text
+    assert {item["source"] for item in only_review.json()["data"]["items"]} == {
+        "review"
+    }
+
+    queued = client.get("/api/wrong-questions?in_queue=true", headers=auth(s1))
+    assert queued.status_code == 200, queued.text
+    assert {item["question_id"] for item in queued.json()["data"]["items"]} == {
+        review_question["id"]
+    }
+    not_queued = client.get("/api/wrong-questions?in_queue=false", headers=auth(s1))
+    assert not_queued.status_code == 200, not_queued.text
+    assert {item["question_id"] for item in not_queued.json()["data"]["items"]} == {
+        practice_question["id"]
+    }
+
+    paged = client.get("/api/wrong-questions?page=1&page_size=1", headers=auth(s1))
+    assert paged.status_code == 200, paged.text
+    assert paged.json()["data"]["total"] == 2
+    assert len(paged.json()["data"]["items"]) == 1
+    page_two = client.get("/api/wrong-questions?page=2&page_size=1", headers=auth(s1))
+    assert page_two.status_code == 200, page_two.text
+    assert len(page_two.json()["data"]["items"]) == 1
+    assert (
+        page_two.json()["data"]["items"][0]["question_id"]
+        != paged.json()["data"]["items"][0]["question_id"]
+    )

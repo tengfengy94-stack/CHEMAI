@@ -204,7 +204,7 @@ function useQuestions(filters, page) {
     return () => {
       cancelled = true
     }
-  }, [version, page, filters.difficulty, filters.status, filters.q])
+  }, [version, page, filters])
 
   return { ...state, reload }
 }

@@ -35,6 +35,20 @@ def _env(name: str) -> str:
     return os.environ.get(name, "").strip()
 
 
+def is_prod() -> bool:
+    """生产环境开关：CHEMAI_ENV=prod；默认按本地开发处理。"""
+    return _env("CHEMAI_ENV").lower() in {"prod", "production"}
+
+
+def seed_demo_enabled() -> bool:
+    """演示账号只在开发环境默认插入；生产必须显式打开。"""
+    if _env("CHEMAI_SEED_DEMO").lower() in {"1", "true", "yes", "on"}:
+        return True
+    if _env("CHEMAI_SEED_DEMO").lower() in {"0", "false", "no", "off"}:
+        return False
+    return not is_prod()
+
+
 def fake_model_enabled() -> bool:
     """显式假模型开关：1/true/yes/on 都算开启。"""
     return _env("CHEMAI_FAKE_MODEL").lower() in {"1", "true", "yes", "on"}
